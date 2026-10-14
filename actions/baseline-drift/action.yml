@@ -1,0 +1,12 @@
+name: rust-ci baseline drift
+description: >
+  Warns (never fails) when the project's copies of the rust-ci baseline drift:
+  rustfmt.toml, rust-toolchain.toml, .config/nextest.toml, the common core of
+  deny.toml and typos.toml, and the [workspace.lints] tables in Cargo.toml.
+  Needs python3 (3.11 or later) on PATH.
+runs:
+  using: composite
+  steps:
+    - name: Compare with the rust-ci baseline
+      shell: bash
+      run: python3 -I "${GITHUB_ACTION_PATH}/drift.py"

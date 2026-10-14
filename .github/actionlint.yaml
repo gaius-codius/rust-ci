@@ -1,0 +1,7 @@
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      # actionlint 1.7.12 predates GitHub's self-repository syntax (uses: $/...,
+      # July 2026). Only those references are excused; drop this once actionlint
+      # knows the syntax.
+      - '"\$/[^"]*" (at "uses" is not following the format|in invalid format because ref is missing)'

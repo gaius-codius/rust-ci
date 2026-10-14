@@ -1,0 +1,27 @@
+# Shared Rust hooks, loaded through lefthook remotes (see README.md). Only the
+# commands every project runs the same way are here; a project keeps the rest
+# (clippy, docs, tests, its own scripts) in its own lefthook.yml.
+# A command here overrides one of the same name in the project's lefthook.yml,
+# so a project that needs a different form uses a different name.
+# Needs on PATH: cargo, cargo-deny, cargo-shear, typos; uvx and actionlint
+# for workflow edits.
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    typos:
+      run: typos --force-exclude {staged_files}
+    workflows:
+      glob: ".github/workflows/*"
+      run: actionlint && uvx zizmor@1.30.1 --offline .github/workflows/
+
+pre-push:
+  parallel: true
+  commands:
+    deny:
+      run: cargo deny --locked check
+    shear:
+      run: cargo shear

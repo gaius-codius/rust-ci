@@ -1,0 +1,11 @@
+name: fixture pre-test
+description: >
+  The fixture's pre-test action, run by rust.yml's test job when pre-test-action
+  is on. It sets a variable for the steps after it, which the post-test script
+  checks.
+runs:
+  using: composite
+  steps:
+    - name: Set a variable for the tests
+      shell: bash
+      run: echo "RUST_CI_PRE_TEST=ran" >>"$GITHUB_ENV"

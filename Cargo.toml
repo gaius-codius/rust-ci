@@ -1,0 +1,53 @@
+# A fixture workspace, so CI can run rust.yml against this repository as a
+# project would. rust-ci isn't a Rust library. The lint tables are a copy of
+# baseline/workspace-lints.toml; the other config files are symlinks into
+# baseline/.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+# `trivial_casts` is left out: in a trial its only hits
+# were `s as &dyn Trait` in iterator maps, where the cast is the clearest way
+# to unsize.
+unused_qualifications = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Restriction lints picked one by one. `unwrap_used` and `expect_used` are allowed
+# in tests through clippy.toml.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+# Lint exceptions are #[expect(...)], so one that no longer fires is reported.
+allow_attributes = "warn"
+str_to_string = "warn"
+clone_on_ref_ptr = "warn"
+# Modules are `foo.rs` with a `foo/` folder; no `mod.rs` files.
+mod_module_files = "warn"
+# From `nursery`, which can change between toolchains; check these when the
+# toolchain is bumped. `redundant_clone` catches a clone of a value that is not
+# used again. `use_self` asks for `Self` inside an impl, instead of repeating
+# the type's name. A false positive gets #[expect(clippy::..., reason = "...")];
+# if those pile up, drop the lint.
+redundant_clone = "warn"
+use_self = "warn"

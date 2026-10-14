@@ -1,0 +1,260 @@
+name: rust
+
+# Shared Rust checks. Projects call this from their own ci.yml:
+#   jobs:
+#     rust:
+#       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v1.x.y
+#       with:
+#         setup-scripts: scripts/install-linux-build-deps.sh
+# The checks report as "rust / lint", "rust / test", "rust / deps" and
+# "rust / workflows" (the caller's job id, then the job's name).
+# The toolchain comes from the project's rust-toolchain.toml.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner labels as a JSON list, for example '["ubuntu-latest"]' or '["self-hosted","linux","x64","<project>"]'.
+        type: string
+        default: '["ubuntu-latest"]'
+      timeout-minutes:
+        description: Timeout of each job. GitHub's own default is 6 hours.
+        type: number
+        default: 60
+      setup-scripts:
+        description: >-
+          Scripts the lint and test jobs run after installing the toolchain and before
+          building, one per line, each a path from the repository root with optional
+          arguments (for example native build dependencies or pinned libraries). Empty
+          runs none.
+        type: string
+        default: ""
+      cache-key-files:
+        description: >-
+          A glob of files whose contents go into the build cache's key (for example a
+          script that pins native libraries the build links). Empty adds nothing.
+        type: string
+        default: ""
+      pre-test-action:
+        description: >-
+          Run the caller's composite action at .github/actions/pre-test in the test job,
+          after the setup scripts and before the tests. Use it for setup that needs other
+          actions (a cache, a download) or sets environment variables for the tests
+          (write them to $GITHUB_ENV).
+        type: boolean
+        default: false
+      pre-test-script:
+        description: A script the test job runs before the tests, a path from the repository root. Empty runs none.
+        type: string
+        default: ""
+      test-command:
+        description: >-
+          The test run: "cargo nextest run" and its arguments, written out in full so a
+          project's own checks can read the arguments in its ci.yml. The arguments are
+          split on spaces.
+        type: string
+        default: cargo nextest run --workspace --locked --profile ci --no-tests=pass
+      post-test-script:
+        description: >-
+          A script the test job runs after the tests, a path from the repository root, for
+          checks that reuse the test build. Empty runs none.
+        type: string
+        default: ""
+      doctest:
+        description: Run `cargo test --workspace --locked --doc` (nextest doesn't run doctests). Turn off while the workspace has no library crate.
+        type: boolean
+        default: true
+      doc-all-features:
+        description: Build the docs with --all-features, so code behind features is checked too.
+        type: boolean
+        default: false
+      deny-arguments:
+        description: Arguments to `cargo deny check`.
+        type: string
+        default: --all-features --locked
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare with the rust-ci baseline
+        # $/ is this repository (rust-ci) at the commit the caller pinned, so the
+        # drift check and its baseline always come from the same release.
+        uses: $/actions/baseline-drift
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      # Broken doc links and stray HTML in doc comments.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+          ALL_FEATURES: ${{ inputs.doc-all-features && '--all-features' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one flag
+          cargo doc --no-deps --document-private-items --workspace ${ALL_FEATURES} --locked
+
+      - name: Typos
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+
+  test:
+    name: test
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      # The caller's own action, from the checkout above. ./ is the caller's
+      # workspace; $/ would be rust-ci.
+      - name: Run the project's pre-test action
+        if: inputs.pre-test-action
+        uses: ./.github/actions/pre-test # zizmor: ignore[self-repository]
+
+      - name: Run the pre-test script
+        if: inputs.pre-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.pre-test-script }}
+        run: '"./${SCRIPT}"'
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest
+
+      - name: Run the tests
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          prefix='cargo nextest run'
+          if [[ ${TEST_COMMAND} != "${prefix}" && ${TEST_COMMAND} != "${prefix} "* ]]; then
+            echo "::error::test-command must start with '${prefix}', got: ${TEST_COMMAND}"
+            exit 1
+          fi
+          read -r -a args <<<"${TEST_COMMAND#"${prefix}"}"
+          echo "cargo nextest run ${args[*]}"
+          cargo nextest run "${args[@]}"
+
+      - name: Run the post-test script
+        if: inputs.post-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.post-test-script }}
+        run: '"./${SCRIPT}"'
+
+      # nextest doesn't run doctests.
+      - name: Doctests
+        if: inputs.doctest
+        run: cargo test --workspace --locked --doc
+
+  deps:
+    name: deps
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          arguments: ${{ inputs.deny-arguments }}
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-shear
+
+      - name: cargo-shear
+        run: cargo shear
+
+  workflows:
+    name: workflows
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned by digest: a tag can be moved.
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+
+  # rules (X2, coming): the weakened-checks detector (gaius-codius/weakened-checks)
+  # becomes a job here once it replaces the projects' scripts/check-weakened.sh.
+  # Until then each project keeps its "Weakened checks are explained" job in rules.yml.
