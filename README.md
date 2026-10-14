@@ -27,7 +27,7 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 
 The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint is downloaded directly).
 
-Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint` and `test` jobs cache the build with Swatinem/rust-cache.
+Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint` and `test` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
 
 Inputs:
 
@@ -37,6 +37,7 @@ Inputs:
 | `timeout-minutes` | `60` | Timeout of each job (GitHub's default is 6 hours) |
 | `setup-scripts` | `""` | Scripts the `lint` and `test` jobs run before building, one per line, each a path with optional arguments: native build dependencies, pinned libraries |
 | `cache-key-files` | `""` | A glob of files hashed into the build cache's key, for example a script that pins a native library |
+| `target-dir` | `""` | Persistent self-hosted runners: an absolute directory that keeps each job's build between runs (`<target-dir>/<owner>/<repo>/<job>`) in place of the GitHub cache, which is slower there than an incremental build. Prune it on the runner |
 | `pre-test-action` | `false` | Run the project's composite action at `.github/actions/pre-test` before the tests. For setup that needs other actions (a cache) or sets variables for the tests (written to `$GITHUB_ENV`) |
 | `pre-test-script` | `""` | A script run before the tests |
 | `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=pass` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces |

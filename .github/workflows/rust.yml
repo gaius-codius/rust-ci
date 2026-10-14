@@ -35,6 +35,14 @@ on:
           script that pins native libraries the build links). Empty adds nothing.
         type: string
         default: ""
+      target-dir:
+        description: >-
+          For a persistent self-hosted runner: an absolute directory on the runner that
+          keeps each job's build between runs, as <target-dir>/<owner>/<repo>/<job>. Set,
+          it replaces the GitHub build cache, whose download and upload take longer than
+          an incremental build there. Empty uses the GitHub cache.
+        type: string
+        default: ""
       pre-test-action:
         description: >-
           Run the caller's composite action at .github/actions/pre-test in the test job,
@@ -99,7 +107,19 @@ jobs:
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
       - name: Cache the build
+        if: inputs.target-dir == ''
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
@@ -152,7 +172,19 @@ jobs:
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
       - name: Cache the build
+        if: inputs.target-dir == ''
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
