@@ -103,6 +103,10 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
 
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
@@ -152,6 +156,10 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
 
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
