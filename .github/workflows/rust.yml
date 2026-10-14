@@ -220,10 +220,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      # cargo-deny needs cargo and reads the toolchain like the other jobs do.
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      # 0.20.2 is the version EmbarkStudios/cargo-deny-action v2.1.1 ran.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          arguments: ${{ inputs.deny-arguments }}
+          tool: cargo-deny@0.20.2
+
+      - name: cargo-deny
+        shell: bash
+        env:
+          DENY_ARGUMENTS: ${{ inputs.deny-arguments }}
+        run: |
+          # Unquoted on purpose: the arguments are split on spaces. The options
+          # before `check` are the ones cargo-deny-action passed.
+          # shellcheck disable=SC2086
+          cargo deny --log-level warn --manifest-path ./Cargo.toml ${DENY_ARGUMENTS} check
 
       - name: Install cargo-shear
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -243,17 +258,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned by digest: a tag can be moved.
-      - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      - name: Install actionlint and zizmor
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          args: -color
+          tool: actionlint@1.7.12,zizmor@1.30.1
 
+      - name: actionlint
+        run: actionlint -color
+
+      # The settings zizmor-action ran with: regular persona, online audits
+      # (they need the token), colour, no SARIF upload.
       - name: zizmor
-        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          version: 1.30.1
-          advanced-security: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=regular --color=always .
 
   # rules (X2, coming): the weakened-checks detector (gaius-codius/weakened-checks)
   # becomes a job here once it replaces the projects' scripts/check-weakened.sh.
