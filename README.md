@@ -21,9 +21,11 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 |---|---|
 | `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked`; `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
-| `deps` | `cargo deny check` (`--all-features --locked`); `cargo shear` |
-| `workflows` | actionlint 1.7.12 (pinned by digest); zizmor 1.30.1 |
+| `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
+| `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
 | `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
+
+The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint is downloaded directly).
 
 Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint` and `test` jobs cache the build with Swatinem/rust-cache.
 
