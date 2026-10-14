@@ -25,8 +25,17 @@ jobs:
       - name: Test the baseline drift check
         run: ./tests/test-drift.sh
 
+      - name: Test the Claude Code rustfmt edit hook
+        run: ./tests/test-fmt-hook.sh
+
+      - name: Test the Claude Code cargo check edit hook
+        run: ./tests/test-check-hook.sh
+
+      - name: Test the Claude Code Stop hook
+        run: ./tests/test-stop-hook.sh
+
       - name: Shellcheck
-        run: shellcheck -S warning tests/*.sh
+        run: shellcheck -S warning agent/*.sh tests/*.sh
 
       # Pinned by digest: a tag can be moved.
       - name: Actionlint

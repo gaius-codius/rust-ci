@@ -10,6 +10,7 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 | Lints | `baseline/workspace-lints.toml` | Its `[workspace.lints]` tables copied into the root `Cargo.toml`; a project may add lints |
 | Dependency policy, spelling | `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds bans, exceptions, excludes and words |
 | Git hooks | `lefthook/rust.yml` | Loaded through lefthook `remotes:`, pinned to a tag |
+| Claude Code hooks | `agent/claude-rust-*.sh` | Symlinked into `~/.claude/hooks/` and registered in `~/.claude/settings.json` (user-level, once per machine) |
 | What moved where | `docs/inventory.md` | Every job, step and hook of nota and conspector, marked shared or project-only |
 
 ## What the workflow checks
@@ -97,6 +98,58 @@ Run these from the project's root.
    ```
 
    then `lefthook install`. A remote's command overrides the project's command of the same name, so a project that needs a different form (other arguments, a wrapper) keeps it under another name. `ref` must be a tag or branch (lefthook can't fetch a commit SHA), and it moves with the CI pin. If lefthook can't fetch the remote (offline, a tag that doesn't exist yet) it says "Couldn't sync" and carries on without these hooks, so check that `lefthook dump` lists them.
+
+## Claude Code hooks
+
+Three user-level hooks for Claude Code agents, needing `jq` and, for the cargo ones, `cargo`. They share one rule: an outcome of exit 2 means "the check ran and found problems". A tool failure (a missing binary, a failed dependency fetch, a crashed tool, a held cargo build lock) never blocks; it goes out as `additionalContext` saying what could not run. Nothing is skipped silently. Tests (fake hook input, fake `cargo` and `rustfmt`, so no Rust build): `tests/test-fmt-hook.sh`, `tests/test-check-hook.sh`, `tests/test-stop-hook.sh`.
+
+| Hook | Event | What it does |
+|---|---|---|
+| `agent/claude-rust-fmt-on-edit.sh` | `PostToolUse`, `Edit\|Write\|MultiEdit` | After a `.rs` edit: `rustfmt --edition <E> <file>`, with the edition from `edition` in the package's `Cargo.toml` or `[workspace.package]` (the baseline `rustfmt.toml` sets only `style_edition`, so a bare `rustfmt` would parse as edition 2015). A file that doesn't parse is exit 2 with rustfmt's message; a missing rustfmt is a tool failure |
+| `agent/claude-rust-check-on-edit.sh` | `PostToolUse`, `Edit\|Write\|MultiEdit` | After a `.rs` edit: `cargo check --workspace --message-format=json`. Errors are reported wherever they are (an edit can break callers in crates it never touched); warnings only for the edited file. Doesn't wait for a held build lock |
+| `agent/claude-rust-stop.sh` | `Stop` and `SubagentStop` | `cargo clippy --workspace --all-targets --message-format=json` when Rust files changed against the merge-base with `origin/main` (committed, staged, unstaged or untracked; nothing changed is silent). Every error is reported wherever it is; warnings only in changed files, so the backlog doesn't nag. Clippy's suggested replacements are shown, never applied. Findings block the stop (exit 2) |
+
+The Stop hook can't loop. When `stop_hook_active` is true and the findings equal the last blocking set (a hash of the checked tree plus a hash of the diagnostics, kept in `rust-ci-stop-hook/` under the git dir), it exits 0 and reports them through `additionalContext` instead of blocking. On `Stop`, `additionalContext` makes Claude continue the turn, so each distinct non-blocking report (that one, a tool failure, a held lock) is delivered that way once; an identical repeat goes out only as `systemMessage`, which shows to you and doesn't continue the turn. If the agent is running cargo itself and holds the build lock, the hook reports that instead of waiting.
+
+Stop doesn't run when you interrupt Claude, so CI remains the gate.
+
+Install once per machine, from a clone of this repo:
+
+```sh
+mkdir -p ~/.claude/hooks
+ln -sf "$RUSTCI/agent/claude-rust-fmt-on-edit.sh" ~/.claude/hooks/rust-fmt-on-edit.sh
+ln -sf "$RUSTCI/agent/claude-rust-check-on-edit.sh" ~/.claude/hooks/rust-check-on-edit.sh
+ln -sf "$RUSTCI/agent/claude-rust-stop.sh" ~/.claude/hooks/rust-stop.sh
+```
+
+and register them in `~/.claude/settings.json`. Under `hooks.PostToolUse`:
+
+```json
+{
+  "matcher": "Edit|Write|MultiEdit",
+  "hooks": [
+    { "type": "command", "command": "\"$HOME\"/.claude/hooks/rust-fmt-on-edit.sh", "timeout": 30 },
+    { "type": "command", "command": "\"$HOME\"/.claude/hooks/rust-check-on-edit.sh", "timeout": 120 }
+  ]
+}
+```
+
+and under both `hooks.Stop` and `hooks.SubagentStop`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "\"$HOME\"/.claude/hooks/rust-stop.sh", "timeout": 300 }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "\"$HOME\"/.claude/hooks/rust-stop.sh", "timeout": 300 }] }
+    ]
+  }
+}
+```
+
+The two edit hooks run in parallel. The cargo check one is optional: it covers the "callers broke" case at the cost of one workspace check per edit (measured on nota, warm, 6 crates and about 1,000 lines: 0.1 to 0.3s for `cargo check -p <crate>` after an edit to a low or a leaf crate, 0.7s for `--workspace` after an edit to the lowest crate, 3.5s for the Stop hook's clippy run).
 
 ## Changing rust-ci
 
