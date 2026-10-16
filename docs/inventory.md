@@ -37,7 +37,7 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 |---|---|
 | files (`No recordings or large files`) | Project (`scripts/check-files.sh` differs per project) |
 | weakened (`Weakened checks are explained`) | Project until the weakened-checks detector replaces `scripts/check-weakened.sh` (R3); then the `rules` job (X2, coming) |
-| secrets (`No secrets (gitleaks)`) | Project |
+| secrets (`No secrets (gitleaks)`) | Project on v1. From v2.0.0, shared: `rust / secrets` (gitleaks 8.30.1); the project job stays until the project moves to v2, then goes |
 
 ## conspector: `.github/workflows/ci.yml`
 
@@ -56,7 +56,7 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 | files (`No large files`), from the base's copy of the script | Project |
 | weakened (`Weakened checks are explained`), from the base's copy | Project until R3; then the `rules` job (X2, coming) |
 | script-tests (`Script tests`): `check-scripts.test.sh`, which includes the audit-parity tests | Project |
-| secrets (`No secrets (gitleaks)`, `--ignore-gitleaks-allow`) | Project |
+| secrets (`No secrets (gitleaks)`, `--ignore-gitleaks-allow`) | Project on v1. From v2.0.0, shared: `rust / secrets` with `gitleaks-arguments: --ignore-gitleaks-allow`; the project job stays until the project moves to v2, then goes |
 
 `scripts/check-credential-leak.sh` needs a systemd user manager and is run by hand, not in CI; it stays project-only. `scripts/audit-parity.sh` is tested in `Script tests` above.
 
@@ -65,7 +65,8 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 | Hook | Command | Now |
 |---|---|---|
 | pre-commit | `fmt` (`cargo fmt --all --check`), `typos`, `workflows` (actionlint and zizmor) | Shared, `lefthook/rust.yml` |
-| pre-commit | `files`, `secrets` (gitleaks flags differ), nota's `clippy-bans`, conspector's `check-scripts` | Project |
+| pre-commit | `secrets` (gitleaks; the flags differ between nota and conspector) | Project on v1. From v2.0.0 the shared `lefthook/rust.yml` has a `secrets` command (`--pre-commit --staged --redact`), which overrides the project's command of that name once its `ref` moves to v2: drop the project's, or rename it to keep its flags (conspector's `--ignore-gitleaks-allow`) |
+| pre-commit | `files`, nota's `clippy-bans`, conspector's `check-scripts` | Project |
 | pre-push | `deny`, `shear` | Shared, `lefthook/rust.yml` |
 | pre-push | `clippy`, `doc`, `test`, `weakened`; nota's `clippy-fuzz`, `test-targets`, `script-tests`, `doctest` | Project (the arguments differ, conspector runs them through `without-git-env.sh`, and nota's `check-test-targets.sh` reads its `test` line) |
 

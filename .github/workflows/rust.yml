@@ -7,8 +7,8 @@ name: rust
 #       with:
 #         setup-scripts: scripts/install-linux-build-deps.sh
 # The checks report as "rust / lint", "rust / test", "rust / deps",
-# "rust / workflows" and, with the mutants input on, "rust / mutants" (the
-# caller's job id, then the job's name).
+# "rust / workflows", "rust / secrets" and, with the mutants input on,
+# "rust / mutants" (the caller's job id, then the job's name).
 # The toolchain comes from the project's rust-toolchain.toml.
 
 on:
@@ -87,6 +87,19 @@ on:
         description: Arguments to `cargo deny check`.
         type: string
         default: --all-features --locked
+      gitleaks-config:
+        description: >-
+          A gitleaks config file for the secrets job, a path from the repository root.
+          Empty uses .gitleaks.toml at the root if there is one (gitleaks reads it by
+          itself), else gitleaks' default rules.
+        type: string
+        default: ""
+      gitleaks-arguments:
+        description: >-
+          Extra arguments to gitleaks in the secrets job, split on spaces, for example
+          --ignore-gitleaks-allow.
+        type: string
+        default: ""
       mutants:
         description: >-
           Add the mutants job: on pull requests, cargo-mutants tests the code the pull
@@ -459,6 +472,64 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: zizmor --persona=regular --color=always .
+
+  secrets:
+    name: secrets
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      # On pull requests the whole history, so the pull request's commits can
+      # be scanned; elsewhere the commit alone.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      # install-action doesn't carry gitleaks, so this downloads the release
+      # binary (Linux x64) and checks it against the pinned digest.
+      - name: Install gitleaks
+        shell: bash
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "${dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check -
+          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
+          echo "${dir}" >>"${GITHUB_PATH}"
+
+      # A pull request: every commit in it (git mode), so a secret added in one
+      # commit and deleted in a later one is still found; it stays in the
+      # history once merged. Other events: the files in the checkout (dir
+      # mode), which needs no history and doesn't fail again on a secret that
+      # was removed and rotated long ago. Secrets are redacted in the log.
+      - name: gitleaks
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CONFIG_PATH: ${{ inputs.gitleaks-config }}
+          GITLEAKS_ARGUMENTS: ${{ inputs.gitleaks-arguments }}
+        run: |
+          args=(--redact --verbose --no-banner)
+          if [[ -n ${CONFIG_PATH} ]]; then
+            args+=(--config "${CONFIG_PATH}")
+          fi
+          read -r -a extra <<<"${GITLEAKS_ARGUMENTS}"
+          args+=("${extra[@]}")
+          if [[ ${EVENT_NAME} == pull_request ]]; then
+            echo "gitleaks git ${args[*]} --log-opts=${BASE_SHA}..HEAD ."
+            gitleaks git "${args[@]}" "--log-opts=${BASE_SHA}..HEAD" .
+          else
+            echo "gitleaks dir ${args[*]} ."
+            gitleaks dir "${args[@]}" .
+          fi
 
   # rules (X2, coming): the weakened-checks detector (gaius-codius/weakened-checks)
   # becomes a job here once it replaces the projects' scripts/check-weakened.sh.

@@ -16,7 +16,7 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 
 ## What the workflow checks
 
-Four jobs, on the runner the caller names. Called from a job with id `rust`, they report as `rust / lint`, `rust / test`, `rust / deps` and `rust / workflows`.
+Five jobs, and a sixth when the `mutants` input is on, on the runner the caller names. Called from a job with id `rust`, they report as `rust / lint`, `rust / test`, `rust / deps`, `rust / workflows`, `rust / secrets` and `rust / mutants`.
 
 | Job | Steps |
 |---|---|
@@ -25,9 +25,10 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 | `mutants` | Only with the `mutants` input on, and only on pull requests (skipped on other events; a skipped job counts as passed for a required check). The toolchain; the setup scripts; the pre-test action and script; cargo-mutants 27.1.0 on the pull request's diff against its base commit (`cargo mutants --in-diff`), in place, with the `mutants-arguments`. A mutant the tests don't catch, or one that times out, fails the job; a diff without Rust code passes |
 | `deps` | On pull requests, the crates the pull request adds to `Cargo.lock` (annotations and a job summary; never fails); the toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
+| `secrets` | gitleaks 8.30.1 (release binary, checked against a pinned digest), secrets redacted in the log. On pull requests, every commit of the pull request (`gitleaks git --log-opts=<base>..HEAD`), so a secret added in one commit and deleted in a later one is still found: it stays in the history once merged. On other events, the files in the checkout (`gitleaks dir .`), which needs no history and doesn't fail again on a secret removed and rotated long ago. gitleaks reads the project's `.gitleaks.toml` and `.gitleaksignore` at the root by itself |
 | `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
 
-The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint is downloaded directly).
+The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint and gitleaks are downloaded directly and checked against pinned digests).
 
 Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint`, `test` and `mutants` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
 
@@ -48,6 +49,8 @@ Inputs:
 | `clippy-all-features` | `false` | Run clippy with `--all-features`, so code behind features is linted too |
 | `doc-all-features` | `false` | Build the docs with `--all-features` |
 | `deny-arguments` | `--all-features --locked` | Arguments to `cargo deny check` |
+| `gitleaks-config` | `""` | A gitleaks config for the `secrets` job, a path from the repository root. Only needed for a config elsewhere: gitleaks reads `.gitleaks.toml` at the root by itself |
+| `gitleaks-arguments` | `""` | Extra arguments to gitleaks, split on spaces, for example `--ignore-gitleaks-allow` |
 | `mutants` | `false` | Add the `mutants` job (pull requests only) |
 | `mutants-arguments` | `""` | Extra arguments to `cargo mutants`, split on spaces, for example `--test-tool nextest` (cargo-nextest is installed) or `--timeout 120`. The job already passes `--in-diff`, `--in-place` and `--output` |
 
@@ -93,11 +96,11 @@ Run these from the project's root.
 
    Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
-   The checks are then named `rust / lint`, `rust / test`, `rust / deps` and `rust / workflows`. Update the branch ruleset's required checks once the new names have run green once, or nothing can merge: either the old names never report, or the new ones are not yet known.
+   The checks are then named `rust / lint`, `rust / test`, `rust / deps`, `rust / workflows`, `rust / secrets` and, with `mutants: true`, `rust / mutants` (skipped, which counts as passed, on events other than pull requests). `rust / secrets` replaces a project's own gitleaks job (nota's and conspector's `No secrets (gitleaks)` in `rules.yml`); conspector passes `gitleaks-arguments: --ignore-gitleaks-allow` to keep its form. Update the branch ruleset's required checks once the new names have run green once, or nothing can merge: either the old names never report, or the new ones are not yet known.
 
 3. **Runner.** Public projects use GitHub-hosted runners (the default, `["ubuntu-latest"]`), which are free for them. Never run a self-hosted runner for a public repository: a fork's pull request could run code on the host. A private project can pass its self-hosted labels in `runs-on`.
 
-4. **Git hooks.** Add the shared hooks to the project's `lefthook.yml`, and delete the project's own commands of the same names (`fmt`, `typos`, `workflows`, `deny`, `shear`):
+4. **Git hooks.** Add the shared hooks to the project's `lefthook.yml`, and delete the project's own commands of the same names (`fmt`, `typos`, `secrets`, `workflows`, `deny`, `shear`):
 
    ```yaml
    remotes:
@@ -107,7 +110,7 @@ Run these from the project's root.
          - lefthook/rust.yml
    ```
 
-   then `lefthook install`. A remote's command overrides the project's command of the same name, so a project that needs a different form (other arguments, a wrapper) keeps it under another name. `ref` must be a tag or branch (lefthook can't fetch a commit SHA), and it moves with the CI pin. If lefthook can't fetch the remote (offline, a tag that doesn't exist yet) it says "Couldn't sync" and carries on without these hooks, so check that `lefthook dump` lists them.
+   then `lefthook install`. A remote's command overrides the project's command of the same name, so a project that needs a different form (other arguments, a wrapper) keeps it under another name. From v2.0.0 that includes `secrets`: the shared command is `gitleaks git --pre-commit --staged --redact --verbose --no-banner` (it needs gitleaks on PATH), and it replaces a project command named `secrets` as soon as the project moves its `ref` to v2. nota and conspector both have a `secrets` command with other flags (conspector's has `--ignore-gitleaks-allow`), so each either drops its own or renames it before moving the `ref`. `ref` must be a tag or branch (lefthook can't fetch a commit SHA), and it moves with the CI pin. If lefthook can't fetch the remote (offline, a tag that doesn't exist yet) it says "Couldn't sync" and carries on without these hooks, so check that `lefthook dump` lists them.
 
 ## Claude Code hooks
 
@@ -178,12 +181,13 @@ A release is one commit tagged `v1.x.y`:
 
 `rust.yml` refers to its own actions as `$/actions/baseline-drift` and `$/actions/new-deps`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
 
-A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
+A branch ruleset ("main checks") requires `self-test`, `actions` and the `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it. The ruleset lists each check by name, so a new job in `rust.yml` isn't required until it's added there: `rust-workflow / secrets` and `rust-workflow / mutants` have to be added by hand once they've run green once.
 
 A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A baseline change that projects haven't copied yet only warns, through the drift check.
 
 v2.0.0 is the first major version after v1. What can fail a project that passed on v1:
 
 - `test-command` defaults to `--no-tests=fail`. A project with no tests yet passes its command with `--no-tests=pass`.
+- The new `secrets` job runs gitleaks on every project, and the shared lefthook `secrets` command replaces a project's own command of that name.
 
 CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-new-deps.sh` (the new-dependency report's cases, on `Cargo.lock` pairs in a temporary repository), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
