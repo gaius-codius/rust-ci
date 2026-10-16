@@ -7,6 +7,7 @@ on:
       - main
     tags:
       - 'v1.*'
+      - 'v2.*'
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,12 @@ jobs:
       - name: Test the Claude Code Stop hook
         run: ./tests/test-stop-hook.sh
 
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Test that CARGO_BUILD_WARNINGS=deny fails on a baseline lint
+        run: ./tests/test-warnings-deny.sh
+
       - name: Shellcheck
         run: shellcheck -S warning agent/*.sh tests/*.sh
 
@@ -49,6 +56,11 @@ jobs:
           version: 1.30.1
           advanced-security: false
 
+      - name: Test the Claude Code protect-config hook
+        run: ./tests/test-protect-hook.sh
+      - name: Test the new-dependency report
+        run: ./tests/test-new-deps.sh
+
   rust-workflow:
     # Runs rust.yml as a project would, against the fixture workspace at the
     # repository root (Cargo.toml, crates/fixture, and symlinks to the
@@ -63,10 +75,14 @@ jobs:
       pre-test-action: true
       test-command: cargo nextest run --workspace --all-targets --locked --profile ci --no-tests=fail
       post-test-script: tests/fixture-post-test.sh
+      # On pull requests only; the fixture's unit test catches every mutant.
+      mutants: true
+      mutants-arguments: --test-tool nextest
 
   actions:
     # This commit's drift action against the fixture, which must show no drift
-    # (rust.yml only warns, so a drifting fixture would pass there).
+    # (a baseline setting missing from the fixture is only a warning, so it
+    # would pass in rust.yml).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

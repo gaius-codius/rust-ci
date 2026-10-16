@@ -1,0 +1,9 @@
+# Clippy's own settings. `unwrap_used`, `expect_used` and `panic` warn in
+# [workspace.lints.clippy]; tests may use them, since a failed unwrap there is
+# a failed test.
+#
+# The common core. Projects add their own settings; the drift check compares
+# only what is here.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

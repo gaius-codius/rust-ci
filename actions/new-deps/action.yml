@@ -1,0 +1,19 @@
+name: rust-ci new dependencies
+description: >
+  Lists the crates a pull request adds to Cargo.lock, compared with Cargo.lock
+  at the base commit: a warning for each new crate, a notice for each new
+  version of a crate already there, and a table in the job summary. Never
+  fails. Needs git, python3 (3.11 or later) on PATH and the base commit in
+  the checkout.
+inputs:
+  base:
+    description: The commit to compare with, normally the pull request's base commit.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: List new dependencies
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base }}
+      run: python3 -I "${GITHUB_ACTION_PATH}/new_deps.py" "${BASE_SHA}"

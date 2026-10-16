@@ -1,6 +1,6 @@
 # The [workspace.lints] tables every project's root Cargo.toml carries. Copy
-# both tables into Cargo.toml; a project may add lints (nota adds
-# print_stdout and print_stderr), and the drift check compares only these.
+# both tables into Cargo.toml; a project may add lints, and the drift check
+# compares only these.
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -32,6 +32,23 @@ str_to_string = "warn"
 clone_on_ref_ptr = "warn"
 # Modules are `foo.rs` with a `foo/` folder; no `mod.rs` files.
 mod_module_files = "warn"
+# Errors are handled or passed on, not dropped: `let _ =` on a #[must_use]
+# value, `.ok()` on a Result whose value is thrown away, and
+# `.map_err(|_| ...)`, which loses the cause.
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+# A function that returns Result reports failure through it, not by
+# unwrapping or panicking.
+unwrap_in_result = "warn"
+panic_in_result_fn = "warn"
+# No stray output or exits from library code. A binary writes its output
+# through a writer (`std::io::stdout().lock()`), or under
+# #[expect(clippy::print_stdout, reason = "...")], and returns an ExitCode from
+# `main` in place of calling `std::process::exit`.
+print_stdout = "warn"
+print_stderr = "warn"
+exit = "warn"
 # From `nursery`, which can change between toolchains; check these when the
 # toolchain is bumped. `redundant_clone` catches a clone of a value that is not
 # used again. `use_self` asks for `Self` inside an impl, instead of repeating
