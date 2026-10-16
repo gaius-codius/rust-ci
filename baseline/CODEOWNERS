@@ -16,6 +16,11 @@ Cargo.toml                  @gaius-codius
 clippy.toml                 @gaius-codius
 .clippy.toml                @gaius-codius
 
+# Cargo config (rustflags, aliases, cargo-mutants) at any depth, and build scripts,
+# which run before every build and test and can set cfgs.
+.cargo/                     @gaius-codius
+build.rs                    @gaius-codius
+
 # Formatting, toolchain, test profiles, dependency policy, spelling.
 rustfmt.toml                @gaius-codius
 .rustfmt.toml               @gaius-codius
@@ -27,9 +32,25 @@ rustfmt.toml                @gaius-codius
 /_typos.toml                @gaius-codius
 /.typos.toml                @gaius-codius
 
-# CI, git hooks, secret scanning, and this file.
+# CI, git hooks, secret scanning, git attributes, and this file.
 /.github/workflows/         @gaius-codius
 /.github/actions/           @gaius-codius
+/.github/zizmor.yml         @gaius-codius
+/.github/zizmor.yaml        @gaius-codius
+/.github/actionlint.yaml    @gaius-codius
+/.github/actionlint.yml     @gaius-codius
 /lefthook.yml               @gaius-codius
+/lefthook.yaml              @gaius-codius
+/.lefthook.yml              @gaius-codius
+/.lefthook.yaml             @gaius-codius
+/lefthook-local.yml         @gaius-codius
+/lefthook-local.yaml        @gaius-codius
 /.gitleaks.toml             @gaius-codius
+/.gitleaksignore            @gaius-codius
+.gitattributes              @gaius-codius
 /.github/CODEOWNERS         @gaius-codius
+
+# Also list the scripts the project passes to rust.yml as setup-scripts or
+# pre-test-script (and .github/actions/pre-test/, covered above): they run before
+# clippy and the tests, so they can change what those see. For example:
+# /scripts/install-linux-build-deps.sh   @gaius-codius
