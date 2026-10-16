@@ -95,13 +95,13 @@ Run these from the project's root.
 
    jobs:
      rust:
-       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v1.x.y
+       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v2.x.y
        with:
          setup-scripts: |
            scripts/install-linux-build-deps.sh
    ```
 
-   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
+   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v2.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
 
    Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
@@ -114,7 +114,7 @@ Run these from the project's root.
    ```yaml
    remotes:
      - git_url: https://github.com/gaius-codius/rust-ci
-       ref: v1.x.y   # the release your ci.yml pins
+       ref: v2.x.y   # the release your ci.yml pins
        configs:
          - lefthook/rust.yml
    ```
@@ -192,18 +192,18 @@ The two edit hooks run in parallel. The cargo check one is optional: it covers t
 
 ## Changing rust-ci
 
-A release is one commit tagged `v1.x.y`:
+A release is one commit tagged `vN.x.y`, where N is the major version (2 now):
 
 1. Commit the change on `main` (by pull request; see below).
-2. Tag that commit `v1.x.y` and push the tag, and move `v1` to it (a convenience for reading; projects pin SHAs):
+2. Tag that commit `vN.x.y` and push the tag, and move `vN` to it (a convenience for reading; projects pin SHAs):
 
    ```sh
-   git tag v1.x.y && git push origin v1.x.y
-   git tag -f v1 v1.x.y && git push -f origin v1
+   git tag v2.x.y && git push origin v2.x.y
+   git tag -f v2 v2.x.y && git push -f origin v2
    ```
 
-3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v1.x.y` beside it) and its `lefthook.yml` `ref` together.
-4. Never move or delete a `v1.x.y` tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*` tags; it doesn't cover the moving `v1` tag.
+3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v2.x.y` beside it) and its `lefthook.yml` `ref` together.
+4. Never move or delete a release tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*` and `v2.*` tags; it doesn't cover the moving `v1` and `v2` tags. A new major version adds its pattern to that ruleset and to the tag trigger in `ci.yml`.
 
 `rust.yml` refers to its own actions as `$/actions/baseline-drift` and `$/actions/new-deps`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
 
