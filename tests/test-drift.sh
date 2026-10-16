@@ -61,7 +61,7 @@ run_case "extra nextest profile is not drift" "no drift" "::warning" \
 run_case "changed nextest setting is drift" "profile.ci.fail-fast is true" "no drift" \
   <<<"sed -i 's/fail-fast = false/fail-fast = true/' .config/nextest.toml"
 run_case "extra lint is not drift" "no drift" "::warning" \
-  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nprint_stdout = \"warn\"/' Cargo.toml"
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = \"warn\"/' Cargo.toml"
 run_case "weaker lint is drift" 'rust.unsafe_code is "allow"' "no drift" \
   <<<"sed -i 's/unsafe_code = \"forbid\"/unsafe_code = \"allow\"/' Cargo.toml"
 run_case "missing lint is drift" "clippy.use_self is missing" "no drift" \
