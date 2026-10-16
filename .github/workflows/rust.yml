@@ -27,7 +27,9 @@ on:
           Scripts the lint and test jobs run after installing the toolchain and before
           building, one per line, each a path from the repository root with optional
           arguments (for example native build dependencies or pinned libraries). Empty
-          runs none.
+          runs none. A check fails if a script sets a variable through $GITHUB_ENV that
+          changes how cargo, rustc, clippy or the test runners work, or puts another
+          cargo, rustc, git or bash first on PATH (actions/env-guard).
         type: string
         default: ""
       cache-key-files:
@@ -49,7 +51,7 @@ on:
           Run the caller's composite action at .github/actions/pre-test in the test job,
           after the setup scripts and before the tests. Use it for setup that needs other
           actions (a cache, a download) or sets environment variables for the tests
-          (write them to $GITHUB_ENV).
+          (write them to $GITHUB_ENV; the ones setup-scripts names are refused).
         type: boolean
         default: false
       pre-test-script:
@@ -184,6 +186,12 @@ jobs:
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
 
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
         shell: bash
@@ -196,6 +204,14 @@ jobs:
             "${cmd[@]}"
             echo "::endgroup::"
           done <<<"${SETUP_SCRIPTS}"
+
+      # The setup scripts can't have changed the build through $GITHUB_ENV or
+      # $GITHUB_PATH.
+      - name: Check the environment
+        if: inputs.setup-scripts != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -259,6 +275,12 @@ jobs:
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
 
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
         shell: bash
@@ -292,6 +314,14 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146
 
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          tools: cargo-nextest
+
       - name: Run the tests
         shell: bash
         env:
@@ -312,6 +342,12 @@ jobs:
         env:
           SCRIPT: ${{ inputs.post-test-script }}
         run: '"./${SCRIPT}"'
+
+      - name: Check the environment after the post-test script
+        if: inputs.doctest && inputs.post-test-script != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
 
       # nextest doesn't run doctests.
       - name: Doctests
@@ -369,6 +405,12 @@ jobs:
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
 
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
         shell: bash
@@ -400,6 +442,15 @@ jobs:
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
+
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          warnings: warn
+          tools: cargo-mutants cargo-nextest
 
       # A pull request's own .gitattributes can mark a file binary or -diff,
       # which would leave its changes out of the diff: $GIT_DIR/info/attributes

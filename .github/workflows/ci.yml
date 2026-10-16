@@ -64,6 +64,9 @@ jobs:
       - name: Test the argument check
         run: ./tests/test-check-args.sh
 
+      - name: Test the env guard
+        run: ./tests/test-env-guard.sh
+
       # The same release binary and digest as rust.yml's secrets job.
       - name: Install gitleaks
         shell: bash
