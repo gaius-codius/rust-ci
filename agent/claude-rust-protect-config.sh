@@ -23,8 +23,10 @@
 #     both are shown, rust-ci's first, with any note from the other.
 #   exit 0 with JSON additionalContext: neither asked, and one had a note, or a
 #     half could not run (missing, failed, too slow, output that isn't hook JSON,
-#     jq missing). A missing shared hook is only mentioned when rust-ci's half
-#     had something to say, so a machine without it isn't told on every command.
+#     jq missing). A shared hook missing from the default path is only mentioned
+#     when rust-ci's half had something to say, so a machine without it isn't
+#     told on every command; one WEAKENED_CHECKS_HOOK names always is. A deny
+#     from a half counts as an ask.
 #   exit 0, nothing: anything else, or RUST_CI_PROTECT_CONFIG=off, which turns
 #     off both halves (WEAKENED_CHECKS_PROTECT_CONFIG=off only the shared one).
 # It never blocks.
@@ -46,6 +48,14 @@ context() {
   exit 0
 }
 
+# ask_by_hand <reason>: an ask written without jq, for when combining fails.
+ask_by_hand() {
+  local m="rust protect hook: $1 $opt_out"
+  m=${m//\\/\\\\}; m=${m//\"/\\\"}; m=${m//$'\n'/\\n}; m=${m//$'\t'/\\t}; m=${m//$'\r'/\\r}
+  printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "%s"}}\n' "$m"
+  exit 0
+}
+
 self=$(realpath -- "${BASH_SOURCE[0]}" 2>/dev/null || readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null) ||
   self=${BASH_SOURCE[0]}
 remainder=$(dirname -- "$self")/rust-protect-remainder.sh
@@ -58,74 +68,101 @@ trap 'rm -rf "$tmp"' EXIT
 cat >"$tmp/in"
 
 # run_half <name> <path>: runs one hook on the input, leaving <name>.out and
-# <name>.status (its exit code, or "missing").
+# <name>.status: its exit code, "timeout", "relative", "missing" or "noexec".
 run_half() {
-  local name=$1 path=$2 code
-  if [[ ! -f $path || ! -x $path ]]; then
-    echo missing >"$tmp/$name.status"
-    return
+  local name=$1 path=$2 code pid dog
+  if [[ $path != /* ]]; then
+    echo relative >"$tmp/$name.status"; return
+  elif [[ ! -f $path ]]; then
+    echo missing >"$tmp/$name.status"; return
+  elif [[ ! -x $path ]]; then
+    echo noexec >"$tmp/$name.status"; return
   fi
   if command -v timeout >/dev/null 2>&1; then
     timeout -k 1 "$deadline" "$path" <"$tmp/in" >"$tmp/$name.out" 2>/dev/null
+    code=$?
+    [[ $code == 124 ]] && code=timeout
   else
-    "$path" <"$tmp/in" >"$tmp/$name.out" 2>/dev/null
+    # No timeout(1) (macOS without coreutils): a watchdog of our own.
+    "$path" <"$tmp/in" >"$tmp/$name.out" 2>/dev/null &
+    pid=$!
+    (sleep "$deadline" && : >"$tmp/$name.late" && kill -TERM "$pid" && sleep 1 && kill -KILL "$pid") >/dev/null 2>&1 &
+    dog=$!
+    wait "$pid"
+    code=$?
+    kill "$dog" 2>/dev/null
+    [[ -e $tmp/$name.late ]] && code=timeout
   fi
-  code=$?
   echo "$code" >"$tmp/$name.status"
 }
-run_half rust "$remainder" &
-run_half shared "$shared" &
+# Their stderr (a "Killed" line from a stopped half) isn't the hook's output.
+run_half rust "$remainder" 2>/dev/null &
+run_half shared "$shared" 2>/dev/null &
 wait
 
-# problem <name> <label>: what went wrong running a half, or nothing.
+# problem <name> <label> <path>: what went wrong running a half, or nothing.
 problem() {
   local status
   status=$(cat "$tmp/$1.status" 2>/dev/null) || status=lost
   case $status in
     0) ;;
-    missing)
+    missing | noexec)
+      [[ $status == missing ]] && status="was not found at $3" || status="at $3 is not executable"
       if [[ $1 == shared ]]; then
-        echo "weakened-checks' hook was not found at $shared (set WEAKENED_CHECKS_HOOK, or link agent/claude-protect-config.sh from a clone of weakened-checks there), so this change was checked only by rust-ci's own rules."
+        echo "$2 $status (set WEAKENED_CHECKS_HOOK, or link agent/claude-protect-config.sh from a clone of weakened-checks to ~/.claude/hooks/protect-config.sh), so this change was checked only by rust-ci's own rules."
       else
-        echo "$2 was not found at $remainder (keep this hook a symlink into a clone of rust-ci), so this change was checked only by weakened-checks' hook."
+        echo "$2 $status (keep this hook a symlink into a clone of rust-ci), so this change was checked only by weakened-checks' hook."
       fi ;;
-    124 | 137) echo "$2 took longer than ${deadline}s and was stopped, so this change was not fully checked." ;;
+    relative) echo "WEAKENED_CHECKS_HOOK is $3, not an absolute path, so $2 did not run and this change was checked only by rust-ci's own rules." ;;
+    timeout) echo "$2 took longer than ${deadline}s and was stopped, so this change was not fully checked." ;;
     *) echo "$2 exited $status, so this change was not fully checked." ;;
   esac
 }
-rust_problem=$(problem rust "rust-ci's own check")
-shared_problem=$(problem shared "weakened-checks' hook")
-rust_out=$(cat "$tmp/rust.out" 2>/dev/null)
-shared_out=$(cat "$tmp/shared.out" 2>/dev/null)
+rust_problem=$(problem rust "rust-ci's own check" "$remainder")
+shared_problem=$(problem shared "weakened-checks' hook" "$shared")
+: >>"$tmp/rust.out"; : >>"$tmp/shared.out"
 
-# A missing shared hook is said only when rust-ci's half had something to say.
-if [[ $(cat "$tmp/shared.status" 2>/dev/null) == missing && -z $rust_out && -z $rust_problem ]]; then
+# The default shared hook, missing, is said only when rust-ci's half had
+# something to say; one named by WEAKENED_CHECKS_HOOK always is.
+if [[ -z ${WEAKENED_CHECKS_HOOK:-} && $(cat "$tmp/shared.status" 2>/dev/null) == missing &&
+  ! -s $tmp/rust.out && -z $rust_problem ]]; then
   shared_problem=""
 fi
 
-if [[ -z $rust_out$shared_out$rust_problem$shared_problem ]]; then
+if [[ ! -s $tmp/rust.out && ! -s $tmp/shared.out && -z $rust_problem$shared_problem ]]; then
   exit 0
 fi
 
+# asked_raw: whether either half's output looks like an ask, read as text.
+asked_raw() {
+  grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"' "$tmp/rust.out" "$tmp/shared.out" 2>/dev/null
+}
+
 if ! command -v jq >/dev/null 2>&1; then
   # Neither half can ask without jq, and their notes can't be read back safely.
+  asked_raw && ask_by_hand "a check asked, but jq is not on PATH to show why, so a human approves this change."
   context "jq is not on PATH, so this change was not checked for weakened checks."
 fi
 
-# Combine with jq: asks win, their reasons joined; every note, and every problem,
-# goes with them: with an ask, in the reason (which is shown) and as
-# additionalContext; without one, as additionalContext.
-jq -n --arg rust "$rust_out" --arg shared "$shared_out" \
+# Combine with jq: asks win (a deny counts as an ask), their reasons joined; every
+# note, and every problem, goes with them: with an ask, in the reason (which is
+# shown) and as additionalContext; without one, as additionalContext. The outputs
+# are read from their files, so their size doesn't matter.
+jq -n --rawfile rust "$tmp/rust.out" --rawfile shared "$tmp/shared.out" \
   --arg rust_problem "$rust_problem" --arg shared_problem "$shared_problem" --arg opt_out "$opt_out" '
+  def bad($label): "rust protect hook: " + $label + " printed something that is not hook JSON, so this change was not fully checked.";
   # parse(<text>; <label>): {asks, notes} from one half output.
   def parse($t; $label):
-    if $t == "" then {asks: [], notes: []}
-    else (try ([$t | fromjson?] | if length == 1 then .[0] else null end) catch null) as $j
+    if ($t | test("^\\s*$")) then {asks: [], notes: []}
+    else ([$t | fromjson?] | if length == 1 then .[0] else null end) as $j
       | if ($j | type) == "object" and ($j.hookSpecificOutput | type) == "object" then
           $j.hookSpecificOutput as $h
-          | {asks: (if $h.permissionDecision == "ask" then [$h.permissionDecisionReason // ($label + " asked")] else [] end),
-             notes: (if ($h.additionalContext // "") != "" then [$h.additionalContext] else [] end)}
-        else {asks: [], notes: ["rust protect hook: " + $label + " printed something that is not hook JSON, so this change was not fully checked."]}
+          | ($h.permissionDecisionReason | if type == "string" then . else ($label + " asked.") end) as $why
+          | {asks: (if $h.permissionDecision == "ask" or $h.permissionDecision == "deny" then [$why] else [] end),
+             notes: ((if ($h.additionalContext | type) == "string" and $h.additionalContext != "" then [$h.additionalContext]
+                      elif $h.additionalContext == null then [] else [bad($label)] end)
+                     + (if ($h.permissionDecision | IN(null, "ask", "deny", "allow")) then [] else [bad($label)] end))}
+        else {asks: [], notes: [bad($label)]}
         end
     end;
   # Each reason ends with its own opt-out; one line naming both replaces them.
@@ -139,7 +176,10 @@ jq -n --arg rust "$rust_out" --arg shared "$shared_out" \
       {hookSpecificOutput: ({hookEventName: "PreToolUse", permissionDecision: "ask",
         permissionDecisionReason: (($asks + $notes + [$opt_out]) | join(" "))}
         + if ($notes | length) > 0 then {additionalContext: ($notes | join("\n"))} else {} end)}
-    else
+    elif ($notes | length) > 0 then
       {hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ($notes | join("\n"))}}
-    end' 2>/dev/null || context "could not combine the two halves' answers with jq, so this change was not fully checked."
-exit 0
+    else empty
+    end' 2>/dev/null && exit 0
+# Combining failed: an ask still asks.
+asked_raw && ask_by_hand "a check asked, but its answers could not be combined to show why, so a human approves this change."
+context "could not combine the two halves' answers with jq, so this change was not fully checked."

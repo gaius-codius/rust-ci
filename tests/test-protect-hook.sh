@@ -334,33 +334,64 @@ write "both halves asking give one ask with both reasons" deny.toml 'x' ask "rus
 write "both reasons are in it" deny.toml 'x' ask "weakened-checks hook: deny.toml is check config"
 out="$(printf '%s' "$(jq -n --arg f "${r}/deny.toml" --arg c "${r}" '{cwd: $c, tool_name: "Write", tool_input: {file_path: $f, content: "x"}}')" | (cd "${r}" && "${hook}"))"
 reason="$(jq -r .hookSpecificOutput.permissionDecisionReason <<<"${out}")"
-if [[ ${reason} == *"WEAKENED_CHECKS_PROTECT_CONFIG=off turns off only its weakened-checks half)." && $(grep -o 'to turn this hook off' <<<"${reason}" | wc -l) -eq 1 ]]; then
-  echo "ok   the joined reason ends with one opt-out naming both halves"
+if [[ ${reason} == "rust protect hook: deny.toml controls"* && ${reason} == *"WEAKENED_CHECKS_PROTECT_CONFIG=off turns off only its weakened-checks half)." && $(grep -o 'to turn this hook off' <<<"${reason}" | wc -l) -eq 1 ]]; then
+  echo "ok   the joined reason starts with rust-ci's and ends with one opt-out naming both halves"
 else
-  echo "FAIL the joined reason ends with one opt-out naming both halves: ${reason}"
+  echo "FAIL the joined reason starts with rust-ci's and ends with one opt-out naming both halves: ${reason}"
   failures=$((failures + 1))
 fi
 write "a Go config in a Rust repo asks (weakened-checks' hook only)" .golangci.yml 'x' ask "weakened-checks hook"
 write "a TypeScript suppression in a Rust repo asks" web/a.ts '// @ts-ignore
 const x = 1;' ask "weakened-checks hook"
 
-WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook: rust-ci's rules still ask" deny.toml 'x' ask "rust protect hook: deny.toml controls"
-WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook is said in additionalContext beside the ask" deny.toml 'x' ask '"additionalContext": "rust protect hook: weakened-checks'"'"' hook was not found'
-WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" run_json "a missing shared hook is said in additionalContext with rust-ci's own note" '{not json' context "hook was not found"
-WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook is not said for a change rust-ci's rules pass" NOTES.md '# notes' silent
-WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" bash_cmd "a missing shared hook is not said for a plain command" "ls" silent
+# An empty WEAKENED_CHECKS_HOOK means the default path, which HOME doesn't have.
+WEAKENED_CHECKS_HOOK="" write "a missing shared hook: rust-ci's rules still ask" deny.toml 'x' ask "rust protect hook: deny.toml controls"
+WEAKENED_CHECKS_HOOK="" write "a missing shared hook is said in additionalContext beside the ask" deny.toml 'x' ask '"additionalContext": "rust protect hook: weakened-checks'"'"' hook was not found'
+WEAKENED_CHECKS_HOOK="" run_json "a missing shared hook is said in additionalContext with rust-ci's own note" '{not json' context "hook was not found"
+WEAKENED_CHECKS_HOOK="" write "a missing shared hook at the default path is not said for a change rust-ci's rules pass" NOTES.md '# notes' silent
+WEAKENED_CHECKS_HOOK="" bash_cmd "a missing shared hook at the default path is not said for a plain command" "ls" silent
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook WEAKENED_CHECKS_HOOK names is always said" NOTES.md '# notes' context "was not found at ${work}/none/protect-config.sh"
+WEAKENED_CHECKS_HOOK="protect-config.sh" write "a relative WEAKENED_CHECKS_HOOK is said, not looked up on PATH" NOTES.md '# notes' context "not an absolute path"
 
 mkdir -p "${work}/stubs"
 printf '#!/bin/sh\ncat >/dev/null\nexit 3\n' >"${work}/stubs/fails.sh"
 printf '#!/bin/sh\ncat >/dev/null\necho hello\n' >"${work}/stubs/text.sh"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"a\\"}}\\n{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"b\\"}}\\n"\n' >"${work}/stubs/two.sh"
 printf '#!/bin/sh\nexec sleep 30\n' >"${work}/stubs/slow.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho "{\\"hookSpecificOutput\\":{\\"permissionDecision\\":\\"ask\\",\\"permissionDecisionReason\\":42}}"\n' >"${work}/stubs/num.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho "{\\"hookSpecificOutput\\":{\\"permissionDecision\\":\\"deny\\",\\"permissionDecisionReason\\":\\"no\\"}}"\n' >"${work}/stubs/deny.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\"}}"\n' >"${work}/stubs/bare.sh"
+# An ask whose reason is far over the 128 KiB a single argument may hold.
+printf '#!/bin/sh\ncat >/dev/null\nprintf "{\\"hookSpecificOutput\\":{\\"permissionDecision\\":\\"ask\\",\\"permissionDecisionReason\\":\\"big %%s\\"}}\\n" "$(head -c 300000 /dev/zero | tr "\\0" x)"\n' >"${work}/stubs/big.sh"
+printf '#!/bin/sh\ncat >/dev/null\n' >"${work}/stubs/noexec.sh"
 chmod +x "${work}"/stubs/*.sh
+chmod -x "${work}/stubs/noexec.sh"
+WEAKENED_CHECKS_HOOK="${work}/stubs/num.sh" write "a shared ask with a reason that isn't a string still asks, with rust-ci's reason" deny.toml 'x' ask "rust protect hook: deny.toml controls"
+WEAKENED_CHECKS_HOOK="${work}/stubs/num.sh" write "a shared ask with a reason that isn't a string asks on its own" NOTES.md '# notes' ask "weakened-checks' hook asked."
+WEAKENED_CHECKS_HOOK="${work}/stubs/deny.sh" write "a shared deny counts as an ask" NOTES.md '# notes' ask "no"
+WEAKENED_CHECKS_HOOK="${work}/stubs/bare.sh" write "a shared answer with nothing in it is silent" NOTES.md '# notes' silent
+WEAKENED_CHECKS_HOOK="${work}/stubs/big.sh" write "a shared ask over the argument size limit still asks" NOTES.md '# notes' ask "big xxx"
+WEAKENED_CHECKS_HOOK="${work}/stubs/big.sh" write "both asking, one over the argument size limit, still ask with both" deny.toml 'x' ask "rust protect hook: deny.toml controls"
+WEAKENED_CHECKS_HOOK="${work}/stubs/noexec.sh" write "a shared hook that isn't executable is said" NOTES.md '# notes' context "is not executable"
 WEAKENED_CHECKS_HOOK="${work}/stubs/fails.sh" write "a failing shared hook is said" NOTES.md '# notes' context "weakened-checks' hook exited 3"
 WEAKENED_CHECKS_HOOK="${work}/stubs/fails.sh" write "a failing shared hook doesn't stop rust-ci's ask" deny.toml 'x' ask "exited 3"
 WEAKENED_CHECKS_HOOK="${work}/stubs/text.sh" write "a shared hook printing text is said" NOTES.md '# notes' context "not hook JSON"
 WEAKENED_CHECKS_HOOK="${work}/stubs/two.sh" write "a shared hook printing two objects is said" NOTES.md '# notes' context "not hook JSON"
 WEAKENED_CHECKS_HOOK="${work}/stubs/slow.sh" write "a slow shared hook is stopped and said" NOTES.md '# notes' context "took longer than"
+# Without timeout(1) the wrapper's own watchdog stops it: a PATH of everything in
+# /usr/bin and /bin but timeout, and jq through a script when it lives elsewhere.
+mkdir -p "${work}/notimeout"
+for t in /usr/bin/* /bin/*; do
+  n="$(basename "${t}")"
+  [[ ${n} == timeout || -e ${work}/notimeout/${n} ]] || ln -s "${t}" "${work}/notimeout/${n}"
+done
+if [[ ! -e ${work}/notimeout/jq ]]; then
+  printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v jq)" >"${work}/notimeout/jq"
+  chmod +x "${work}/notimeout/jq"
+fi
+HOOK_PATH="${work}/notimeout" WEAKENED_CHECKS_HOOK="${work}/stubs/slow.sh" write "without timeout(1), a slow shared hook is still stopped and said" NOTES.md '# notes' context "took longer than"
+HOOK_PATH="${work}/notimeout" WEAKENED_CHECKS_HOOK="${work}/stubs/slow.sh" write "without timeout(1), rust-ci's ask survives a slow shared hook" deny.toml 'x' ask "took longer than"
+HOOK_PATH="${work}/notimeout" write "without timeout(1), both halves still run" deny.toml 'x' ask "weakened-checks hook: deny.toml is check config"
 
 WEAKENED_CHECKS_PROTECT_CONFIG=off write "WEAKENED_CHECKS_PROTECT_CONFIG=off turns off the shared half" .golangci.yml 'x' silent
 out="$(WEAKENED_CHECKS_PROTECT_CONFIG=off bash -c 'printf "%s" "$1" | (cd "$2" && "$3")' _ "$(jq -n --arg f "${r}/deny.toml" --arg c "${r}" '{cwd: $c, tool_name: "Write", tool_input: {file_path: $f, content: "x"}}')" "${r}" "${hook}")"
@@ -380,6 +411,10 @@ write "through a symlink, rust-ci's rules still run" build.rs 'x' ask "rust prot
 cp "${wrapper}" "${work}/copy/rust-protect-config.sh"
 hook="${work}/copy/rust-protect-config.sh"
 write "a copy without its remainder says so, and the shared hook still asks" deny.toml 'x' ask "rust-ci's own check was not found"
+printf '#!/bin/sh\ncat >/dev/null\nexit 3\n' >"${work}/copy/rust-protect-remainder.sh"
+chmod +x "${work}/copy/rust-protect-remainder.sh"
+write "a failing remainder is said, and the shared hook still asks" deny.toml 'x' ask "rust-ci's own check exited 3"
+write "a failing remainder is said on its own" NOTES.md '# notes' context "rust-ci's own check exited 3"
 hook="${wrapper}"
 
 # Opt-out.
@@ -391,6 +426,9 @@ unset RUST_CI_PROTECT_CONFIG
 # A tool failure never asks and is never silent.
 HOOK_PATH="${nojq}" write "missing jq is reported through additionalContext" deny.toml 'x' context "jq is not on PATH"
 HOOK_PATH="${nojq}" write "missing jq is quiet for a file that isn't ours" NOTES.md 'x' silent
+printf '#!/bin/sh\ncat >/dev/null\necho "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"permissionDecision\\":\\"ask\\",\\"permissionDecisionReason\\":\\"x\\"}}"\n' >"${work}/stubs/handask.sh"
+chmod +x "${work}/stubs/handask.sh"
+HOOK_PATH="${nojq}" WEAKENED_CHECKS_HOOK="${work}/stubs/handask.sh" write "missing jq: an ask written by hand still asks" NOTES.md 'x' ask "jq is not on PATH"
 run_json "unreadable input is reported, not asked" '{not json' context "could not read the hook input"
 
 # Not ours to judge.
