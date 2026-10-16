@@ -114,6 +114,33 @@ run_case "rustc outside the rustup toolchains fails" fail "rustc's sysroot is '/
 
 run_case "an empty snapshot fails" fail "snapshot is empty" GUARD_SNAPSHOT=
 
+# In a PID namespace that keeps the host's /proc (as a runner under pasta or
+# unshare does), the shell's $$ isn't its PID in /proc. Skipped where
+# unprivileged user namespaces aren't allowed.
+if unshare --user --pid --fork true 2>/dev/null; then
+  base_run=(env -i "${base_env[@]}" GUARD_MODE=check GUARD_SNAPSHOT="${snapshot}"
+    GUARD_WARNINGS=deny GUARD_TOOLS= BASH_ENV= ENV= SHELLOPTS= BASHOPTS= LD_PRELOAD= LD_AUDIT=
+    GUARD_SEEN_BASH_ENV= GUARD_SEEN_ENV= GUARD_SEEN_SHELLOPTS= GUARD_SEEN_BASHOPTS=
+    GUARD_SEEN_LD_PRELOAD= GUARD_SEEN_LD_AUDIT=)
+  printf '%s\n' "${rustup_home}/toolchains/stable" >"${work}/sysroot.txt"
+  for want in pass fail; do
+    extra=()
+    [[ ${want} == fail ]] && extra=(RUSTFLAGS=--cap-lints=allow)
+    o="$(unshare --user --pid --fork "${base_run[@]}" "${extra[@]}" \
+      /bin/bash --posix --noprofile --norc -e "${work}/run.sh" 2>&1)"
+    code=$?
+    if [[ ${want} == pass && ${code} -ne 0 ]] || [[ ${want} == fail && ( ${code} -eq 0 || ${o} != *RUSTFLAGS* ) ]]; then
+      echo "FAIL in a PID namespace, want ${want}: exit ${code}; output:"
+      printf '%s\n' "${o}" | sed 's/^/    /'
+      failures=$((failures + 1))
+    else
+      echo "ok   in a PID namespace with the host's /proc, the check gives ${want}"
+    fi
+  done
+else
+  echo "skip in a PID namespace (unshare --user --pid not allowed here)"
+fi
+
 if [[ ${failures} -ne 0 ]]; then
   echo "${failures} case(s) failed"
   exit 1
