@@ -104,6 +104,22 @@ run_case "known crate from a git source is a warning" "${base}" \
   "::warning title=New dependency::new crate: serde 1.0.200 from https://github.com/serde-rs/serde?rev=abc" \
   -- "0123456789abcdef"
 
+gitsrc='git+https://github.com/example/dep?branch=main'
+gitbase="$(lock app 0.1.0 -- dep 0.3.0 "${gitsrc}#1111111111111111111111111111111111111111")"
+
+run_case "git dependency moved to a new commit is not a new crate" "${gitbase}" \
+  "$(lock app 0.1.0 -- dep 0.3.0 "${gitsrc}#2222222222222222222222222222222222222222")" \
+  "Cargo.lock adds no crates." -- "::warning" "::notice"
+
+run_case "git dependency at a new commit and version is a notice" "${gitbase}" \
+  "$(lock app 0.1.0 -- dep 0.4.0 "${gitsrc}#2222222222222222222222222222222222222222")" \
+  "::notice title=New dependency::new version: dep 0.4.0 from https://github.com/example/dep?branch=main" \
+  -- "::warning" "2222222"
+
+run_case "git dependency on another branch is a new crate" "${gitbase}" \
+  "$(lock app 0.1.0 -- dep 0.3.0 "git+https://github.com/example/dep?branch=dev#2222222222222222222222222222222222222222")" \
+  "::warning title=New dependency::new crate: dep 0.3.0 from https://github.com/example/dep?branch=dev"
+
 run_case "removed crate is not reported" "${base}" \
   "$(lock app 0.1.0 -- serde 1.0.200 "${registry}")" \
   "Cargo.lock adds no crates." -- "libc" "::warning"

@@ -8,6 +8,9 @@ the current directory. Each package that is new prints a GitHub annotation:
 - a notice for a new version of a crate the base already had from the same
   source (an update, or a second version next to the old one).
 
+A git source is compared without its resolved commit (the "#<sha>"), so a git
+dependency moved to a new commit of the same version isn't reported.
+
 Packages without a source (workspace members and path dependencies) are left
 out: they are in the repository, so the pull request's diff shows them. The
 same list goes to the job summary ($GITHUB_STEP_SUMMARY) as a table.
@@ -31,6 +34,18 @@ def annotate(level, message):
     print(f"::{level} title={TITLE}::{message}")
 
 
+def source_id(source):
+    """The source a package comes from, less a git source's resolved commit.
+
+    "git+https://host/repo?branch=main#<sha>" at another <sha> is the same
+    repository, so moving a git dependency to a new commit isn't a new crate.
+    The query (?branch=, ?rev=) stays: it names what is followed.
+    """
+    if source.startswith("git+"):
+        return source.split("#", 1)[0]
+    return source
+
+
 def packages(text):
     """Maps (name, source) to the set of versions locked from that source."""
     out = {}
@@ -38,7 +53,8 @@ def packages(text):
         source = package.get("source")
         if source is None:
             continue
-        out.setdefault((package["name"], source), set()).add(package["version"])
+        key = (package["name"], source_id(source))
+        out.setdefault(key, set()).add(package["version"])
     return out
 
 
