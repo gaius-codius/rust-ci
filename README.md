@@ -7,6 +7,8 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 | Reusable workflow | `.github/workflows/rust.yml` | Called from the project's `ci.yml` |
 | Baseline drift check | `actions/baseline-drift` | Run by the workflow's `lint` job; fails on a weakened setting, warns on a missing one |
 | New-dependency report | `actions/new-deps` | Run by the workflow's `deps` job on pull requests; reports, never fails |
+| Environment guard | `actions/env-guard` | Run by the workflow before each check that project scripts could reach; fails on flags, wrappers or tools they changed |
+| Argument check | `actions/check-args` | Run by the workflow on its argument inputs; fails on an argument that makes a check pass without checking |
 | Formatting, toolchain, test profiles | `baseline/rustfmt.toml`, `baseline/rust-toolchain.toml`, `baseline/.config/nextest.toml` | Copied to the project as they are |
 | Lints | `baseline/workspace-lints.toml` | Its `[workspace.lints]` tables copied into the root `Cargo.toml`; a project may add lints |
 | Clippy settings, dependency policy, spelling | `baseline/clippy.toml`, `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds settings, bans, exceptions, excludes and words |
@@ -111,13 +113,13 @@ Run these from the project's root.
 
    jobs:
      rust:
-       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v2.x.y
+       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v3.x.y
        with:
          setup-scripts: |
            scripts/install-linux-build-deps.sh
    ```
 
-   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v2.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
+   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v3.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report, the environment guard, the argument check) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
 
    Weakened checks stay in the project's own `rules.yml`: the [weakened-checks](https://github.com/gaius-codius/weakened-checks) action needs a `pull_request` workflow that also runs on `edited`, so that editing the PR body (its `Check changes:` line) runs it again, and the rest of this workflow shouldn't rerun for that.
 
@@ -132,7 +134,7 @@ Run these from the project's root.
    ```yaml
    remotes:
      - git_url: https://github.com/gaius-codius/rust-ci
-       ref: v2.x.y   # the release your ci.yml pins
+       ref: v3.x.y   # the release your ci.yml pins
        configs:
          - lefthook/rust.yml
    ```
@@ -210,29 +212,37 @@ The two edit hooks run in parallel. The cargo check one is optional: it covers t
 
 ## Changing rust-ci
 
-A release is one commit tagged `vN.x.y`, where N is the major version (2 now):
+A release is one commit tagged `vN.x.y`, where N is the major version (3 now):
 
 1. Commit the change on `main` (by pull request; see below).
 2. Tag that commit `vN.x.y` and push the tag, and move `vN` to it (a convenience for reading; projects pin SHAs):
 
    ```sh
-   git tag v2.x.y && git push origin v2.x.y
-   git tag -f v2 v2.x.y && git push -f origin v2
+   git tag v3.x.y && git push origin v3.x.y
+   git tag -f v3 v3.x.y && git push -f origin v3
    ```
 
-3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v2.x.y` beside it) and its `lefthook.yml` `ref` together.
-4. Never move or delete a release tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*` and `v2.*` tags; it doesn't cover the moving `v1` and `v2` tags. A new major version adds its pattern to that ruleset and to the tag trigger in `ci.yml`.
+3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v3.x.y` beside it) and its `lefthook.yml` `ref` together.
+4. Never move or delete a release tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*`, `v2.*` and `v3.*` tags; it doesn't cover the moving `v1`, `v2` and `v3` tags. A new major version adds its pattern to that ruleset and to the tag trigger in `ci.yml`.
 
-`rust.yml` refers to its own actions as `$/actions/baseline-drift` and `$/actions/new-deps`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
+`rust.yml` refers to its own actions as `$/actions/baseline-drift`, `$/actions/new-deps`, `$/actions/env-guard` and `$/actions/check-args`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
 
-A branch ruleset ("main checks") requires `self-test`, `actions` and the `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it. The ruleset lists each check by name, so a new job in `rust.yml` isn't required until it's added there: `rust-workflow / secrets` and `rust-workflow / mutants` have to be added by hand once they've run green once.
+A branch ruleset ("main checks") requires `self-test`, `actions` and the `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it. The ruleset lists each check by name, so a new job in `rust.yml` isn't required until it's added there by hand, once it has run green.
 
 A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A new baseline setting that projects haven't copied yet only warns, through the drift check; a changed value (a toolchain bump) fails it until the project copies the change, which it does in the same change as its pin. v2.0.0 is one: its baseline adds `let_underscore_must_use`, `unused_result_ok`, `map_err_ignore`, `unwrap_in_result`, `panic_in_result_fn`, `print_stdout`, `print_stderr` and `exit`, and the drift check fails on weakened settings.
 
 v2.0.0 is the first major version after v1. What can fail a project that passed on v1:
 
-- `test-command` defaults to `--no-tests=fail`. A project with no tests yet passes its command with `--no-tests=pass`.
+- `test-command` defaults to `--no-tests=fail`. (In v2 a project with no tests yet could pass `--no-tests=pass`; v3 rejects it.)
 - The new `secrets` job runs gitleaks on every project, and the shared lefthook `secrets` command replaces a project's own command of that name.
 - The baseline adds eight clippy lints (see "Changing rust-ci" above), and the drift check fails on a weakened or removed baseline setting and on a member crate without `[lints] workspace = true`.
+
+v3.0.0 closes ways a pull request could still make a check pass without checking. What can fail a project that passed on v2:
+
+- The drift check fails on an extra lint entry at `allow` (or a `warnings` entry below deny), on a root `.cargo/config.toml` that loosens lints or shadows a checked command, on a `.clippy.toml`, `.rustfmt.toml` or member-level clippy or rustfmt file, on `[lib] test = false` and profiles that turn off overflow checks or debug assertions, and on nextest retries above the baseline. Against the base branch it also fails on new `workspace.exclude`, `advisories.ignore`, `bans.skip` and `bans.skip-tree` entries, and on an added `autotests = false` or nextest `default-filter`. It now finds members under `**` globs.
+- The environment guard fails the job when a setup, pre-test or post-test script changes cargo's flags or wrappers or which tools run.
+- The argument inputs reject arguments that make a check pass without checking, `--no-tests=pass` among them.
+- The secrets job and the lefthook `secrets` command ignore inline `gitleaks:allow` comments unless `gitleaks-allow-comments` is true, and scan every changed file as text whatever `.gitattributes` says.
+- cargo-mutants runs with `--no-config`, so `.cargo/mutants.toml` no longer applies; its options go in `mutants-arguments`.
 
 CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-new-deps.sh` (the new-dependency report's cases, on `Cargo.lock` pairs in a temporary repository), `tests/test-check-args.sh` (the argument check's cases), `tests/test-env-guard.sh` (the environment check against a fake toolchain), `tests/test-gitattributes.sh` (a pull request's `.gitattributes` hiding a planted secret from `git diff` and gitleaks), `tests/test-warnings-deny.sh` (clippy on a copy of the fixture with an `unwrap` planted must fail with `CARGO_BUILD_WARNINGS=deny`, and pass without the plant), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
