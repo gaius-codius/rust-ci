@@ -66,7 +66,10 @@ guard_denied="${guard_denied//$'\n'/ }"
 
 # The process's own environment, as the runner started it: what $GITHUB_ENV
 # set, including exported functions (BASH_FUNC_<name>%%), which bash doesn't
-# list as variables.
+# list as variables. /proc/self, not /proc/$$: the shell opens the redirect
+# itself, so self is this shell, and $$ is a PID in the shell's own namespace,
+# which a runner in a PID namespace with the host's /proc (pasta, unshare)
+# doesn't have, or has as another process.
 while IFS= read -r -d '' entry; do
   name="${entry%%=*}"
   value="${entry#*=}"
@@ -91,7 +94,7 @@ while IFS= read -r -d '' entry; do
       fi
       ;;
   esac
-done </proc/$$/environ
+done </proc/self/environ
 
 if [[ ${CARGO_BUILD_WARNINGS:-} != "${GUARD_WARNINGS}" ]]; then
   guard_fail "CARGO_BUILD_WARNINGS is '${CARGO_BUILD_WARNINGS:-}', not '${GUARD_WARNINGS}'."
