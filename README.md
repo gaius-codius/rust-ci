@@ -6,6 +6,7 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 |---|---|---|
 | Reusable workflow | `.github/workflows/rust.yml` | Called from the project's `ci.yml` |
 | Baseline drift check | `actions/baseline-drift` | Run by the workflow's `lint` job; fails on a weakened setting, warns on a missing one |
+| New-dependency report | `actions/new-deps` | Run by the workflow's `deps` job on pull requests; reports, never fails |
 | Formatting, toolchain, test profiles | `baseline/rustfmt.toml`, `baseline/rust-toolchain.toml`, `baseline/.config/nextest.toml` | Copied to the project as they are |
 | Lints | `baseline/workspace-lints.toml` | Its `[workspace.lints]` tables copied into the root `Cargo.toml`; a project may add lints |
 | Clippy settings, dependency policy, spelling | `baseline/clippy.toml`, `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds settings, bans, exceptions, excludes and words |
@@ -15,19 +16,21 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 
 ## What the workflow checks
 
-Four jobs, on the runner the caller names. Called from a job with id `rust`, they report as `rust / lint`, `rust / test`, `rust / deps` and `rust / workflows`.
+Five jobs, and a sixth when the `mutants` input is on, on the runner the caller names. Called from a job with id `rust`, they report as `rust / lint`, `rust / test`, `rust / deps`, `rust / workflows`, `rust / secrets` and `rust / mutants`.
 
 | Job | Steps |
 |---|---|
-| `lint` | Drift from this baseline (see below); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked`; `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
+| `lint` | Drift from this baseline (see below); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked` (with `--all-features` if `clippy-all-features` is set); `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
-| `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
+| `mutants` | Only with the `mutants` input on, and only on pull requests (skipped on other events; a skipped job counts as passed for a required check). The toolchain; the setup scripts; the pre-test action and script; cargo-mutants 27.1.0 on the pull request's diff against its base commit (`cargo mutants --in-diff`), in place, with the `mutants-arguments`. A mutant the tests don't catch, or one that times out, fails the job; a diff without Rust code passes |
+| `deps` | On pull requests, the crates the pull request adds to `Cargo.lock` (annotations and a job summary; never fails); the toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
+| `secrets` | gitleaks 8.30.1 (release binary, checked against a pinned digest), secrets redacted in the log. On pull requests, every commit of the pull request (`gitleaks git --log-opts=<base>..HEAD`), so a secret added in one commit and deleted in a later one is still found: it stays in the history once merged. On other events, the files in the checkout (`gitleaks dir .`), which needs no history and doesn't fail again on a secret removed and rotated long ago. gitleaks reads the project's `.gitleaks.toml` and `.gitleaksignore` at the root by itself |
 | `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
 
-The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint is downloaded directly).
+The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint and gitleaks are downloaded directly and checked against pinned digests).
 
-Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint` and `test` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
+Every job but `mutants` sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. (A mutant often leaves a warning, such as an unused argument; denied, it would fail to build and go untested.) The `lint`, `test` and `mutants` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
 
 Inputs:
 
@@ -35,16 +38,21 @@ Inputs:
 |---|---|---|
 | `runs-on` | `'["ubuntu-latest"]'` | Runner labels as a JSON list |
 | `timeout-minutes` | `60` | Timeout of each job (GitHub's default is 6 hours) |
-| `setup-scripts` | `""` | Scripts the `lint` and `test` jobs run before building, one per line, each a path with optional arguments: native build dependencies, pinned libraries |
+| `setup-scripts` | `""` | Scripts the `lint`, `test` and `mutants` jobs run before building, one per line, each a path with optional arguments: native build dependencies, pinned libraries |
 | `cache-key-files` | `""` | A glob of files hashed into the build cache's key, for example a script that pins a native library |
 | `target-dir` | `""` | Persistent self-hosted runners: an absolute directory that keeps each job's build between runs (`<target-dir>/<owner>/<repo>/<job>`) in place of the GitHub cache, which is slower there than an incremental build. Prune it on the runner |
 | `pre-test-action` | `false` | Run the project's composite action at `.github/actions/pre-test` before the tests. For setup that needs other actions (a cache) or sets variables for the tests (written to `$GITHUB_ENV`) |
 | `pre-test-script` | `""` | A script run before the tests |
-| `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=pass` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces |
+| `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=fail` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces. `--no-tests=fail` fails a run that finds no tests; a workspace with none yet passes the command with `--no-tests=pass`. Changed in v2.0.0 (v1 defaulted to `--no-tests=pass`) |
 | `post-test-script` | `""` | A script run after the tests, for checks that reuse the test build |
 | `doctest` | `true` | Run doctests. Turn off while the workspace has no library crate (`cargo test --doc` fails without one) |
+| `clippy-all-features` | `false` | Run clippy with `--all-features`, so code behind features is linted too |
 | `doc-all-features` | `false` | Build the docs with `--all-features` |
 | `deny-arguments` | `--all-features --locked` | Arguments to `cargo deny check` |
+| `gitleaks-config` | `""` | A gitleaks config for the `secrets` job, a path from the repository root. Only needed for a config elsewhere: gitleaks reads `.gitleaks.toml` at the root by itself |
+| `gitleaks-arguments` | `""` | Extra arguments to gitleaks, split on spaces, for example `--ignore-gitleaks-allow` |
+| `mutants` | `false` | Add the `mutants` job (pull requests only) |
+| `mutants-arguments` | `""` | Extra arguments to `cargo mutants`, split on spaces, for example `--test-tool nextest` (cargo-nextest is installed) or `--timeout 120`. The job already passes `--in-diff`, `--in-place` and `--output` |
 
 The drift check compares the project's copies with this release's `baseline/`:
 
@@ -60,6 +68,8 @@ Each difference is an annotation on the `lint` job. These are errors, and fail t
 - A workspace member that doesn't take the workspace lints, or a file that can't be parsed.
 
 A baseline setting, list item or file the project doesn't have yet (and didn't have at the base) is a warning: that is how a new baseline item reaches projects that haven't copied it.
+
+The new-dependency report compares `Cargo.lock` at the pull request's base commit with the pull request's. A crate the base didn't have from that source (a new dependency, or a known crate from a new registry or repository) is a warning; a new version of a crate the base had from the same source is a notice. Workspace members and path dependencies are left out, since the diff shows them. Every new package, with its version and source, also goes into a table in the job summary, which is the full list (GitHub shows at most 10 warnings and 10 notices per step). The report never fails the job: adding a crate is often the right change, and whether a crate is trustworthy and worth what it brings is a reviewer's judgement, not a rule a script can hold. cargo-deny still fails on a banned crate, a disallowed licence or source, or an advisory.
 
 ## Adopting it
 
@@ -91,15 +101,15 @@ Run these from the project's root.
            scripts/install-linux-build-deps.sh
    ```
 
-   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own drift action with GitHub's self-repository syntax (`uses: $/...`), so the action and baseline always come from the commit you pinned.
+   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
 
-   Project-only jobs (fuzzing, mutation testing, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
+   Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
-   The checks are then named `rust / lint`, `rust / test`, `rust / deps` and `rust / workflows`. Update the branch ruleset's required checks once the new names have run green once, or nothing can merge: either the old names never report, or the new ones are not yet known.
+   The checks are then named `rust / lint`, `rust / test`, `rust / deps`, `rust / workflows`, `rust / secrets` and, with `mutants: true`, `rust / mutants` (skipped, which counts as passed, on events other than pull requests). `rust / secrets` replaces a project's own gitleaks job (nota's and conspector's `No secrets (gitleaks)` in `rules.yml`); conspector passes `gitleaks-arguments: --ignore-gitleaks-allow` to keep its form. Update the branch ruleset's required checks once the new names have run green once, or nothing can merge: either the old names never report, or the new ones are not yet known.
 
 3. **Runner.** Public projects use GitHub-hosted runners (the default, `["ubuntu-latest"]`), which are free for them. Never run a self-hosted runner for a public repository: a fork's pull request could run code on the host. A private project can pass its self-hosted labels in `runs-on`.
 
-4. **Git hooks.** Add the shared hooks to the project's `lefthook.yml`, and delete the project's own commands of the same names (`fmt`, `typos`, `workflows`, `deny`, `shear`):
+4. **Git hooks.** Add the shared hooks to the project's `lefthook.yml`, and delete the project's own commands of the same names (`fmt`, `typos`, `secrets`, `workflows`, `deny`, `shear`):
 
    ```yaml
    remotes:
@@ -109,7 +119,7 @@ Run these from the project's root.
          - lefthook/rust.yml
    ```
 
-   then `lefthook install`. A remote's command overrides the project's command of the same name, so a project that needs a different form (other arguments, a wrapper) keeps it under another name. `ref` must be a tag or branch (lefthook can't fetch a commit SHA), and it moves with the CI pin. If lefthook can't fetch the remote (offline, a tag that doesn't exist yet) it says "Couldn't sync" and carries on without these hooks, so check that `lefthook dump` lists them.
+   then `lefthook install`. A remote's command overrides the project's command of the same name, so a project that needs a different form (other arguments, a wrapper) keeps it under another name. From v2.0.0 that includes `secrets`: the shared command is `gitleaks git --pre-commit --staged --redact --verbose --no-banner` (it needs gitleaks on PATH), and it replaces a project command named `secrets` as soon as the project moves its `ref` to v2. nota and conspector both have a `secrets` command with other flags (conspector's has `--ignore-gitleaks-allow`), so each either drops its own or renames it before moving the `ref`. `ref` must be a tag or branch (lefthook can't fetch a commit SHA), and it moves with the CI pin. If lefthook can't fetch the remote (offline, a tag that doesn't exist yet) it says "Couldn't sync" and carries on without these hooks, so check that `lefthook dump` lists them.
 
 5. **Code owners.** Copy `baseline/CODEOWNERS` to `.github/CODEOWNERS` and set the owner. It lists the files that control the checks (the lint tables' `Cargo.toml`, `clippy.toml`, `rustfmt.toml`, the toolchain, nextest, `deny.toml`, typos, workflows, actions, `lefthook.yml`, `.gitleaks.toml` and itself). Then turn on "Require a pull request" with "Require review from Code Owners" in the default branch's ruleset, so a change that loosens a check, whoever or whatever wrote it, can't merge without the owner's approval. The drift check doesn't compare this file.
 
@@ -195,10 +205,16 @@ A release is one commit tagged `v1.x.y`:
 3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v1.x.y` beside it) and its `lefthook.yml` `ref` together.
 4. Never move or delete a `v1.x.y` tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*` tags; it doesn't cover the moving `v1` tag.
 
-`rust.yml` refers to its own drift action as `$/actions/baseline-drift`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
+`rust.yml` refers to its own actions as `$/actions/baseline-drift` and `$/actions/new-deps`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
 
-A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
+A branch ruleset ("main checks") requires `self-test`, `actions` and the `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it. The ruleset lists each check by name, so a new job in `rust.yml` isn't required until it's added there: `rust-workflow / secrets` and `rust-workflow / mutants` have to be added by hand once they've run green once.
 
 A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A new baseline setting that projects haven't copied yet only warns, through the drift check; a changed value (a toolchain bump) fails it until the project copies the change, which it does in the same change as its pin. v2.0.0 is one: its baseline adds `let_underscore_must_use`, `unused_result_ok`, `map_err_ignore`, `unwrap_in_result`, `panic_in_result_fn`, `print_stdout`, `print_stderr` and `exit`, and the drift check fails on weakened settings.
 
-CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-warnings-deny.sh` (clippy on a copy of the fixture with an `unwrap` planted must fail with `CARGO_BUILD_WARNINGS=deny`, and pass without the plant), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
+v2.0.0 is the first major version after v1. What can fail a project that passed on v1:
+
+- `test-command` defaults to `--no-tests=fail`. A project with no tests yet passes its command with `--no-tests=pass`.
+- The new `secrets` job runs gitleaks on every project, and the shared lefthook `secrets` command replaces a project's own command of that name.
+- The baseline adds eight clippy lints (see "Changing rust-ci" above), and the drift check fails on a weakened or removed baseline setting and on a member crate without `[lints] workspace = true`.
+
+CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-new-deps.sh` (the new-dependency report's cases, on `Cargo.lock` pairs in a temporary repository), `tests/test-warnings-deny.sh` (clippy on a copy of the fixture with an `unwrap` planted must fail with `CARGO_BUILD_WARNINGS=deny`, and pass without the plant), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
