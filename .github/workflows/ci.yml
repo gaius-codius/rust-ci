@@ -61,6 +61,9 @@ jobs:
       - name: Test the new-dependency report
         run: ./tests/test-new-deps.sh
 
+      - name: Test the argument check
+        run: ./tests/test-check-args.sh
+
       # The same release binary and digest as rust.yml's secrets job.
       - name: Install gitleaks
         shell: bash

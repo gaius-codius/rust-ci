@@ -61,8 +61,9 @@ on:
           The test run: "cargo nextest run" and its arguments, written out in full so a
           project's own checks can read the arguments in its ci.yml. The arguments are
           split on spaces. --no-tests=fail fails a run that finds no tests (a filter or
-          a target that matches nothing); a workspace without tests yet passes
-          --no-tests=pass.
+          a target that matches nothing). Arguments that pass tests without running
+          them (--no-tests=pass or warn, --retries, --no-run, --partition, --run-ignored
+          only, another config or archive) fail the job (actions/check-args).
         type: string
         default: cargo nextest run --workspace --locked --profile ci --no-tests=fail
       post-test-script:
@@ -84,7 +85,9 @@ on:
         type: boolean
         default: false
       deny-arguments:
-        description: Arguments to `cargo deny check`.
+        description: >-
+          Arguments to `cargo deny`, before `check`. --config, --manifest-path,
+          --metadata-path, --exclude and a subcommand fail the job.
         type: string
         default: --all-features --locked
       gitleaks-config:
@@ -96,7 +99,10 @@ on:
         default: ""
       gitleaks-arguments:
         description: >-
-          Extra arguments to gitleaks in the secrets job, split on spaces.
+          Extra arguments to gitleaks in the secrets job, split on spaces. Arguments
+          that skip or forgive findings (--exit-code, --baseline-path, --enable-rule,
+          --gitleaks-ignore-path, --log-opts, --config: use gitleaks-config) fail the
+          job.
         type: string
         default: ""
       gitleaks-allow-comments:
@@ -119,6 +125,8 @@ on:
           "--test-tool nextest" (cargo-nextest is installed) or "--timeout 120". The job
           already passes --in-diff, --in-place, --output and --no-config: the pull
           request's .cargo/mutants.toml is not read, so cargo-mutants options go here.
+          Arguments that leave mutants out or test none (--list, --check, --exclude,
+          --exclude-re, --re, --file, --package, --shard, --baseline) fail the job.
         type: string
         default: ""
 
@@ -220,6 +228,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Check the test-command arguments
+        uses: $/actions/check-args
+        with:
+          tool: nextest
+          arguments: ${{ inputs.test-command }}
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
@@ -324,6 +338,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Check the mutants-arguments
+        uses: $/actions/check-args
+        with:
+          tool: mutants
+          arguments: ${{ inputs.mutants-arguments }}
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
@@ -432,6 +452,12 @@ jobs:
         with:
           base: ${{ github.event.pull_request.base.sha }}
 
+      - name: Check the deny-arguments
+        uses: $/actions/check-args
+        with:
+          tool: deny
+          arguments: ${{ inputs.deny-arguments }}
+
       # cargo-deny needs cargo and reads the toolchain like the other jobs do.
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
@@ -515,6 +541,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      - name: Check the gitleaks-arguments
+        uses: $/actions/check-args
+        with:
+          tool: gitleaks
+          arguments: ${{ inputs.gitleaks-arguments }}
 
       # install-action doesn't carry gitleaks, so this downloads the release
       # binary (Linux x64) and checks it against the pinned digest.
