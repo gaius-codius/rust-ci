@@ -4,8 +4,11 @@ description: >
   rust-toolchain.toml, .config/nextest.toml, clippy.toml, the common core of
   deny.toml and typos.toml, and the [workspace.lints] tables in Cargo.toml,
   which every workspace member must take with `[lints] workspace = true`.
-  Fails on a weakened or changed setting, a setting removed since base-ref, or
-  a member that doesn't take the workspace lints; warns on a baseline setting
+  Fails on a weakened or changed setting, an extra lint at allow, a setting
+  removed since base-ref, a member that doesn't take the workspace lints, a
+  clippy or rustfmt config file that replaces the root's, a .cargo/config.toml
+  that loosens CI, a switch that takes tests out of the run, and an exclude,
+  advisory ignore or bans skip new since base-ref; warns on a baseline setting
   the project hasn't copied yet. Needs python3 (3.11 or later) on PATH, and
   git with base-ref.
 inputs:

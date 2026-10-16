@@ -111,6 +111,16 @@ run_case "unparsable file is an error" 1 "::error title=rust-ci baseline drift::
 # Lints in Cargo.toml.
 run_case "extra lint is not drift" 0 "no drift" "::" \
   <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = \"warn\"/' Cargo.toml"
+run_case "extra allowed lint is an error" 1 'clippy.indexing_slicing is "allow", which turns lints off' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = \"allow\"/' Cargo.toml"
+run_case "extra allowed group at a high priority is an error" 1 'clippy.restriction is {"level": "allow", "priority": 1}, which turns lints off' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nrestriction = { level = \"allow\", priority = 1 }/' Cargo.toml"
+run_case "allowed warnings are an error" 1 'rust.warnings is {"level": "allow", "priority": 10}; `warnings` may only be deny or forbid' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.rust\]$/[workspace.lints.rust]\nwarnings = { level = \"allow\", priority = 10 }/' Cargo.toml"
+run_case "denied warnings are not drift" 0 "no drift" "::" \
+  <<<"sed -i 's/^\[workspace.lints.rust\]$/[workspace.lints.rust]\nwarnings = \"deny\"/' Cargo.toml"
+run_case "extra lint without a level is an error" 1 'clippy.indexing_slicing is {"priority": 1}, which is not a lint level' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = { priority = 1 }/' Cargo.toml"
 run_case "weaker lint level is an error" 1 'rust.unsafe_code is "allow", weaker than the baseline'"'"'s "forbid"' "no drift" \
   <<<"sed -i 's/unsafe_code = \"forbid\"/unsafe_code = \"allow\"/' Cargo.toml"
 run_case "stricter lint level is not drift" 0 "no drift" "::" \
@@ -123,6 +133,84 @@ run_case "missing lint is a warning" 0 "::warning title=rust-ci baseline drift::
   <<<"sed -i '/^use_self/d' Cargo.toml"
 run_case "Cargo.toml without lints is a warning" 0 "has no [workspace.lints]" "no drift" \
   <<<"printf '[workspace]\n' >Cargo.toml"
+
+# Config files that replace the root's clippy.toml and rustfmt.toml.
+run_case "root .clippy.toml is an error" 1 ".clippy.toml is read in place of clippy.toml" "no drift" \
+  <<<"echo 'allow-panic-in-tests = false' >.clippy.toml"
+run_case "root .rustfmt.toml is an error" 1 ".rustfmt.toml is read in place of rustfmt.toml" "no drift" \
+  <<<"cp rustfmt.toml .rustfmt.toml"
+run_case "member clippy.toml is an error" 1 "crates/a/clippy.toml replaces the root's clippy.toml under crates/a/" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && touch crates/a/clippy.toml"
+run_case "rustfmt.toml in a member's sources is an error" 1 "crates/a/src/x/.rustfmt.toml replaces the root's rustfmt.toml" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p crates/a/src/x && touch crates/a/src/x/.rustfmt.toml"
+run_case "clippy.toml above a member is an error" 1 "crates/clippy.toml replaces the root's clippy.toml under crates/" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && touch crates/clippy.toml"
+run_case "config files outside the members are not drift" 0 "no drift" "::" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p docs crates/a/target crates/a/vendored && touch docs/clippy.toml crates/a/target/rustfmt.toml crates/a/vendored/.git crates/a/vendored/rustfmt.toml"
+
+# Switches that take tests or checks out of the run.
+run_case "lib test = false is an error" 1 "crates/a/Cargo.toml: [lib] test = false leaves the library's unit tests out" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n[lib]\ntest = false\n'"
+run_case "lib doctest = false is a warning" 0 "::warning title=rust-ci baseline drift::crates/a/Cargo.toml: [lib] doctest = false" "::error" \
+  <<<"add_member a '[lints]\nworkspace = true\n[lib]\ndoctest = false\n'"
+run_case "autotests = false without a base is a warning" 0 "::warning title=rust-ci baseline drift::crates/a/Cargo.toml: [package] autotests = false" "::error" \
+  <<<"add_member a 'autotests = false\n[lints]\nworkspace = true\n'"
+BASE_REF=HEAD run_case "autotests = false added since the base is an error" 1 "autotests = false leaves files in tests/ without a [[test]] entry out of the test run, and is new since the base commit" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && commit_base && sed -i '2a autotests = false' crates/a/Cargo.toml"
+BASE_REF=HEAD run_case "autotests = false at the base too is a warning" 0 "[package] autotests = false" "::error" \
+  <<<"add_member a 'autotests = false\n[lints]\nworkspace = true\n' && commit_base"
+run_case "test target switches are warnings" 0 '[[test]] "it" has harness = false' "::error" \
+  <<<"add_member a '[lints]\nworkspace = true\n[[test]]\nname = \"it\"\nharness = false\n[[test]]\nname = \"off\"\ntest = false\n'"
+run_case "test profile without overflow checks is an error" 1 "Cargo.toml: profile.test.overflow-checks is false" "no drift" \
+  <<<"printf '\n[profile.test]\noverflow-checks = false\n' >>Cargo.toml"
+run_case "dev package profile without debug assertions is an error" 1 'Cargo.toml: profile.dev.package."a".debug-assertions is false' "no drift" \
+  <<<"printf '\n[profile.dev.package.a]\ndebug-assertions = false\n' >>Cargo.toml"
+run_case "cargo config profile is checked" 1 ".cargo/config.toml: profile.dev.overflow-checks is false" "no drift" \
+  <<<"mkdir .cargo && printf '[profile.dev]\noverflow-checks = false\n' >.cargo/config.toml"
+run_case "release profile is not drift" 0 "no drift" "::" \
+  <<<"printf '\n[profile.release]\noverflow-checks = false\ndebug-assertions = false\n' >>Cargo.toml"
+run_case "retries in the ci profile are an error" 1 ".config/nextest.toml: profile.ci retries tests 2 times (baseline: 0)" "no drift" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\nretries = 2/' .config/nextest.toml"
+run_case "retries in a default override are an error" 1 "profile.default retries tests 3 times" "no drift" \
+  <<<"printf '\n[[profile.default.overrides]]\nfilter = \"test(x)\"\nretries = { backoff = \"fixed\", count = 3 }\n' >>.config/nextest.toml"
+run_case "retries in a profile ci inherits are an error" 1 "profile.flaky retries tests 2 times (baseline: 0), and the ci profile uses it" "no drift" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\ninherits = \"flaky\"/' .config/nextest.toml && printf '\n[profile.flaky]\nretries = 2\n' >>.config/nextest.toml"
+BASE_REF=HEAD run_case "retries added to another profile since the base are an error" 1 "profile.slow retries tests 2 times (baseline: 0), and it has more than at the base commit" "no drift" \
+  <<<"commit_base && printf '\n[profile.slow]\nretries = 2\n' >>.config/nextest.toml"
+BASE_REF=HEAD run_case "retries another profile had at the base are not drift" 0 "no drift" "::" \
+  <<<"printf '\n[profile.slow]\nretries = 2\n' >>.config/nextest.toml && commit_base"
+run_case "default-filter without a base is a warning" 0 '::warning title=rust-ci baseline drift::.config/nextest.toml: profile.ci.default-filter is "not test(slow)"' "::error" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml"
+BASE_REF=HEAD run_case "default-filter added since the base is an error" 1 "profile.ci.default-filter is \"not test(slow)\", which leaves the tests it doesn't match out of every run; a new or changed filter" "no drift" \
+  <<<"commit_base && sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml"
+BASE_REF=HEAD run_case "new advisory ignore is an error" 1 'deny.toml: advisories.ignore has {"id": "RUSTSEC-2024-0002"}, new since the base commit; a new advisory ignore needs' 'RUSTSEC-2024-0001' \
+  <<<"sed -i 's/^ignore = \[\]/ignore = [{ id = \"RUSTSEC-2024-0001\", reason = \"old\" }]/' deny.toml && commit_base && sed -i 's/\"old\" }\]/\"reworded\" }, { id = \"RUSTSEC-2024-0002\" }]/' deny.toml"
+BASE_REF=HEAD run_case "new bans skip is an error" 1 'deny.toml: bans.skip-tree has "windows-sys@0.48", new since the base commit' "no drift" \
+  <<<"commit_base && sed -i 's/^allow-wildcard-paths = true$/&\nskip-tree = [\"windows-sys@0.48\"]/' deny.toml"
+BASE_REF=HEAD run_case "new workspace exclude is an error" 1 'Cargo.toml: workspace.exclude has "crates/a", new since the base commit; a new workspace exclude needs' "no drift" \
+  <<<"commit_base && add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
+run_case "advisory ignore without a base is not drift" 0 "no drift" "::" \
+  <<<"sed -i 's/^ignore = \[\]/ignore = [\"RUSTSEC-2024-0001\"]/' deny.toml"
+
+# .cargo/config.toml.
+run_case "capped lints in rustflags are an error" 1 '.cargo/config.toml: build.rustflags has "--cap-lints allow", which turns lints off' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nrustflags = [\"--cap-lints\", \"allow\"]\n' >.cargo/config.toml"
+run_case "allowed lints in target rustflags are an error" 1 'target.x86_64-unknown-linux-gnu.rustflags has "-Aclippy::all"' "no drift" \
+  <<<"mkdir .cargo && printf '[target.x86_64-unknown-linux-gnu]\nrustflags = \"-C debuginfo=1 -Aclippy::all\"\n' >.cargo/config.toml"
+run_case "alias over a CI command is an error" 1 '.cargo/config.toml: [alias] replaces `cargo clippy`' "no drift" \
+  <<<"mkdir .cargo && printf '[alias]\nclippy = \"check\"\nxtask = \"run -p xtask --\"\n' >.cargo/config.toml"
+run_case "legacy .cargo/config is checked" 1 '.cargo/config: [env] sets CLIPPY_ARGS' "no drift" \
+  <<<"mkdir .cargo && printf '[env]\nCLIPPY_ARGS = \"-Aclippy::all\"\nMY_SETTING = \"1\"\n' >.cargo/config"
+run_case "rustc wrapper is an error" 1 'build.rustc-wrapper is "./fake-rustc"' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nrustc-wrapper = \"./fake-rustc\"\nwarnings = \"allow\"\n' >.cargo/config.toml"
+run_case "allowed build warnings are an error" 1 'build.warnings is "allow"' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nwarnings = \"allow\"\n' >.cargo/config.toml"
+run_case "sccache and plain rustflags are not drift" 0 "no drift" "::" \
+  <<<"mkdir .cargo && printf '[build]\nrustc-wrapper = \"/usr/bin/sccache\"\nrustflags = [\"-C\", \"target-cpu=native\", \"-Dwarnings\"]\n' >.cargo/config.toml"
+run_case "test runner is a warning" 0 '::warning title=rust-ci baseline drift::.cargo/config.toml: target.x86_64-unknown-linux-gnu.runner runs the tests through "qemu"' "::error" \
+  <<<"mkdir .cargo && printf '[target.x86_64-unknown-linux-gnu]\nrunner = \"qemu\"\n' >.cargo/config.toml"
+run_case "unparsable cargo config is an error" 1 "could not read .cargo/config.toml" "no drift" \
+  <<<"mkdir .cargo && echo 'not = = toml' >.cargo/config.toml"
 
 # Removed since the base commit.
 BASE_REF=HEAD run_case "base commit without changes is no drift" 0 "no drift" "::" \
@@ -151,6 +239,12 @@ run_case "excluded member is not checked" 0 "no drift" "::" \
   <<<"add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
 run_case "path dependency inside the workspace is a member" 1 "other/b/Cargo.toml has no [lints]" "no drift" \
   <<<"add_member a '[lints]\nworkspace = true\n[dependencies]\nb = { path = \"../../other/b\" }\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml"
+run_case "member under a ** glob is checked" 1 "crates/x/y/deep/Cargo.toml has no [lints]" "no drift" \
+  <<<"sed -i 's|^members = .*|members = [\"crates/**/deep\"]|' Cargo.toml && mkdir -p crates/x/y/deep && printf '[package]\nname = \"deep\"\n' >crates/x/y/deep/Cargo.toml"
+run_case "unused workspace path dependency is not a member" 0 "no drift" "::" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml && printf '\n[workspace.dependencies]\nb = { path = \"other/b\" }\n' >>Cargo.toml"
+run_case "inherited workspace path dependency is a member" 1 "other/b/Cargo.toml has no [lints]" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n[dependencies]\nb.workspace = true\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml && printf '\n[workspace.dependencies]\nb = { path = \"other/b\" }\n' >>Cargo.toml"
 run_case "root package without [lints] is an error" 1 "Cargo.toml has no [lints]" "no drift" \
   <<<"sed -i '1i [package]\nname = \"root\"\n' Cargo.toml"
 

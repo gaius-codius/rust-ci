@@ -27,7 +27,9 @@ on:
           Scripts the lint and test jobs run after installing the toolchain and before
           building, one per line, each a path from the repository root with optional
           arguments (for example native build dependencies or pinned libraries). Empty
-          runs none.
+          runs none. A check fails if a script sets a variable through $GITHUB_ENV that
+          changes how cargo, rustc, clippy or the test runners work, or puts another
+          cargo, rustc, git or bash first on PATH (actions/env-guard).
         type: string
         default: ""
       cache-key-files:
@@ -49,7 +51,7 @@ on:
           Run the caller's composite action at .github/actions/pre-test in the test job,
           after the setup scripts and before the tests. Use it for setup that needs other
           actions (a cache, a download) or sets environment variables for the tests
-          (write them to $GITHUB_ENV).
+          (write them to $GITHUB_ENV; the ones setup-scripts names are refused).
         type: boolean
         default: false
       pre-test-script:
@@ -61,8 +63,9 @@ on:
           The test run: "cargo nextest run" and its arguments, written out in full so a
           project's own checks can read the arguments in its ci.yml. The arguments are
           split on spaces. --no-tests=fail fails a run that finds no tests (a filter or
-          a target that matches nothing); a workspace without tests yet passes
-          --no-tests=pass.
+          a target that matches nothing). Arguments that pass tests without running
+          them (--no-tests=pass or warn, --retries, --no-run, --partition, --run-ignored
+          only, another config or archive) fail the job (actions/check-args).
         type: string
         default: cargo nextest run --workspace --locked --profile ci --no-tests=fail
       post-test-script:
@@ -84,7 +87,9 @@ on:
         type: boolean
         default: false
       deny-arguments:
-        description: Arguments to `cargo deny check`.
+        description: >-
+          Arguments to `cargo deny`, before `check`. --config, --manifest-path,
+          --metadata-path, --exclude and a subcommand fail the job.
         type: string
         default: --all-features --locked
       gitleaks-config:
@@ -96,10 +101,19 @@ on:
         default: ""
       gitleaks-arguments:
         description: >-
-          Extra arguments to gitleaks in the secrets job, split on spaces, for example
-          --ignore-gitleaks-allow.
+          Extra arguments to gitleaks in the secrets job, split on spaces. Arguments
+          that skip or forgive findings (--exit-code, --baseline-path, --enable-rule,
+          --gitleaks-ignore-path, --log-opts, --config: use gitleaks-config) fail the
+          job.
         type: string
         default: ""
+      gitleaks-allow-comments:
+        description: >-
+          Honour inline gitleaks:allow comments in the secrets job. Off, the job passes
+          --ignore-gitleaks-allow, so a secret can't be waved through in the change
+          that adds it; .gitleaksignore still applies.
+        type: boolean
+        default: false
       mutants:
         description: >-
           Add the mutants job: on pull requests, cargo-mutants tests the code the pull
@@ -111,7 +125,10 @@ on:
         description: >-
           Extra arguments to `cargo mutants`, split on spaces, for example
           "--test-tool nextest" (cargo-nextest is installed) or "--timeout 120". The job
-          already passes --in-diff, --in-place and --output.
+          already passes --in-diff, --in-place, --output and --no-config: the pull
+          request's .cargo/mutants.toml is not read, so cargo-mutants options go here.
+          Arguments that leave mutants out or test none (--list, --check, --exclude,
+          --exclude-re, --re, --file, --package, --shard, --baseline) fail the job.
         type: string
         default: ""
 
@@ -169,6 +186,12 @@ jobs:
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
 
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
         shell: bash
@@ -181,6 +204,14 @@ jobs:
             "${cmd[@]}"
             echo "::endgroup::"
           done <<<"${SETUP_SCRIPTS}"
+
+      # The setup scripts can't have changed the build through $GITHUB_ENV or
+      # $GITHUB_PATH.
+      - name: Check the environment
+        if: inputs.setup-scripts != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -214,6 +245,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check the test-command arguments
+        uses: $/actions/check-args
+        with:
+          tool: nextest
+          arguments: ${{ inputs.test-command }}
+
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
@@ -237,6 +274,12 @@ jobs:
           # the job started, rustup among them, which breaks persistent
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
+
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
 
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
@@ -264,10 +307,20 @@ jobs:
           SCRIPT: ${{ inputs.pre-test-script }}
         run: '"./${SCRIPT}"'
 
+      # The latest version install-action v2.87.22 knows; the mutants job
+      # installs the same one.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.146
+
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          tools: cargo-nextest
 
       - name: Run the tests
         shell: bash
@@ -289,6 +342,12 @@ jobs:
         env:
           SCRIPT: ${{ inputs.post-test-script }}
         run: '"./${SCRIPT}"'
+
+      - name: Check the environment after the post-test script
+        if: inputs.doctest && inputs.post-test-script != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
 
       # nextest doesn't run doctests.
       - name: Doctests
@@ -316,6 +375,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Check the mutants-arguments
+        uses: $/actions/check-args
+        with:
+          tool: mutants
+          arguments: ${{ inputs.mutants-arguments }}
+
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install
 
@@ -339,6 +404,12 @@ jobs:
           # the job started, rustup among them, which breaks persistent
           # self-hosted runners. Tools come from install-action anyway.
           cache-bin: false
+
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
 
       - name: Run the setup scripts
         if: inputs.setup-scripts != ''
@@ -365,14 +436,29 @@ jobs:
           SCRIPT: ${{ inputs.pre-test-script }}
         run: '"./${SCRIPT}"'
 
-      # cargo-nextest for a project that passes --test-tool nextest.
+      # cargo-nextest for a project that passes --test-tool nextest, the same
+      # version as the test job's.
       - name: Install cargo-mutants and cargo-nextest
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-mutants@27.1.0,cargo-nextest
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
 
-      # The diff prefixes are spelled out because a runner's git config can
-      # change them, and cargo-mutants reads the paths after them. --in-place
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          warnings: warn
+          tools: cargo-mutants cargo-nextest
+
+      # A pull request's own .gitattributes can mark a file binary or -diff,
+      # which would leave its changes out of the diff: $GIT_DIR/info/attributes
+      # comes before every .gitattributes, and "diff" makes every file a text
+      # diff (NUL bytes too). The diff prefixes are spelled out because a
+      # runner's git config can change them, and cargo-mutants reads the paths
+      # after them. --no-config leaves out the pull request's
+      # .cargo/mutants.toml, which could exclude every mutant. --in-place
       # mutates the checkout, which the job throws away, so the build uses the
       # cached or kept target directory. An empty diff, or one without Rust
       # files, passes; a surviving mutant fails the step (exit 2), and so does a
@@ -383,13 +469,16 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MUTANTS_ARGUMENTS: ${{ inputs.mutants-arguments }}
         run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
           out="${RUNNER_TEMP}/mutants"
           mkdir -p "${out}"
-          git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
-            "${BASE_SHA}...HEAD" >"${out}/pr.diff"
+          git diff --no-color --no-ext-diff --no-textconv --text \
+            --src-prefix=a/ --dst-prefix=b/ "${BASE_SHA}...HEAD" >"${out}/pr.diff"
           read -r -a args <<<"${MUTANTS_ARGUMENTS}"
-          echo "cargo mutants --in-diff pr.diff --in-place ${args[*]}"
-          cargo mutants --in-diff "${out}/pr.diff" --in-place \
+          echo "cargo mutants --no-config --in-diff pr.diff --in-place ${args[*]}"
+          cargo mutants --no-config --in-diff "${out}/pr.diff" --in-place \
             --output "${out}" "${args[@]}"
 
   deps:
@@ -413,6 +502,12 @@ jobs:
         uses: $/actions/new-deps
         with:
           base: ${{ github.event.pull_request.base.sha }}
+
+      - name: Check the deny-arguments
+        uses: $/actions/check-args
+        with:
+          tool: deny
+          arguments: ${{ inputs.deny-arguments }}
 
       # cargo-deny needs cargo and reads the toolchain like the other jobs do.
       - name: Install the pinned toolchain (rust-toolchain.toml)
@@ -498,6 +593,12 @@ jobs:
           persist-credentials: false
           fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
 
+      - name: Check the gitleaks-arguments
+        uses: $/actions/check-args
+        with:
+          tool: gitleaks
+          arguments: ${{ inputs.gitleaks-arguments }}
+
       # install-action doesn't carry gitleaks, so this downloads the release
       # binary (Linux x64) and checks it against the pinned digest.
       - name: Install gitleaks
@@ -521,6 +622,11 @@ jobs:
       # history once merged. Other events: the files in the checkout (dir
       # mode), which needs no history and doesn't fail again on a secret that
       # was removed and rotated long ago. Secrets are redacted in the log.
+      # Inline gitleaks:allow comments are ignored unless the input allows
+      # them (--ignore-gitleaks-allow passed twice is fine). A pull request's
+      # own .gitattributes can mark a file binary or -diff, which hides its
+      # changes from git mode: $GIT_DIR/info/attributes comes before every
+      # .gitattributes, and "diff" makes every file a text diff (NUL bytes too).
       - name: gitleaks
         shell: bash
         env:
@@ -528,8 +634,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CONFIG_PATH: ${{ inputs.gitleaks-config }}
           GITLEAKS_ARGUMENTS: ${{ inputs.gitleaks-arguments }}
+          ALLOW_COMMENTS: ${{ inputs.gitleaks-allow-comments }}
         run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
           args=(--redact --verbose --no-banner)
+          if [[ ${ALLOW_COMMENTS} != true ]]; then
+            args+=(--ignore-gitleaks-allow)
+          fi
           if [[ -n ${CONFIG_PATH} ]]; then
             args+=(--config "${CONFIG_PATH}")
           fi

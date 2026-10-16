@@ -1,0 +1,23 @@
+name: rust-ci argument check
+description: >
+  Fails on an argument in one of rust.yml's argument inputs that would make a
+  check pass without checking (gitleaks --exit-code 0, cargo-mutants --list or
+  --exclude-re, nextest --retries or --no-tests=pass, a cargo-deny --config
+  other than deny.toml, any --help), or that replaces one the job passes
+  itself. Run it before anything from the project runs.
+inputs:
+  tool:
+    description: Whose arguments these are, gitleaks, mutants, nextest or deny.
+    required: true
+  arguments:
+    description: The arguments, as the input gives them (split on spaces).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check the arguments
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        ARGUMENTS: ${{ inputs.arguments }}
+      run: bash "${GITHUB_ACTION_PATH}/check-args.sh" "${TOOL}"
