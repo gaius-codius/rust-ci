@@ -12,6 +12,9 @@ Errors (they fail the job):
   pull request's base), read from git; without it nothing counts as removed;
 - a workspace member whose Cargo.toml lacks `[lints] workspace = true`, or
   whose [lints] table sets lints of its own instead;
+- a .clippy.toml or .rustfmt.toml at the root, or a clippy.toml,
+  .clippy.toml, rustfmt.toml or .rustfmt.toml in or above a workspace
+  member's directory: the tools read it in place of the root's file;
 - a root .cargo/config.toml (or .cargo/config) that loosens what CI runs:
   rustflags or rustdocflags that allow or cap lints, `build.warnings =
   "allow"`, a rustc or rustdoc of its own or a rustc wrapper other than
@@ -363,6 +366,50 @@ def check_members(manifest, members):
     return problems
 
 
+# Each tool's config file names, the one it reads first leading: a .clippy.toml
+# or .rustfmt.toml wins over the plain name in the same directory.
+TOOL_CONFIGS = {"clippy.toml": (".clippy.toml", "clippy.toml"), "rustfmt.toml": (".rustfmt.toml", "rustfmt.toml")}
+# Directories never searched for config files: build output and git data.
+SKIPPED_DIRECTORIES = {"target", ".git"}
+
+
+def check_tool_configs(members):
+    """clippy and rustfmt must read the root's clippy.toml and rustfmt.toml.
+
+    Both tools take the first config file they find, searching from a crate's
+    (clippy) or a source file's (rustfmt) directory up, and read .clippy.toml
+    and .rustfmt.toml before the plain names. So a dotted file at the root, or
+    either name in a member's directory, one of its subdirectories or a
+    directory between it and the root, replaces the file the drift check
+    compares.
+    """
+    root = Path.cwd().resolve()
+    problems, directories = [], {root}
+    for directory, _, _ in members:
+        directories.update(parent for parent in [directory, *directory.parents] if parent.is_relative_to(root))
+        for top, subdirectories, files in os.walk(directory):
+            # A directory with a .git of its own is another checkout, not this one.
+            subdirectories[:] = [
+                name
+                for name in subdirectories
+                if name not in SKIPPED_DIRECTORIES and not (Path(top) / name / ".git").exists()
+            ]
+            directories.add(Path(top))
+    for directory in sorted(directories):
+        for compared, names in TOOL_CONFIGS.items():
+            for name in names:
+                path = directory / name
+                if not path.is_file() or (directory == root and name == compared):
+                    continue
+                where = path.relative_to(root)
+                if directory == root:
+                    why = f"{where} is read in place of {compared}, which the drift check compares"
+                else:
+                    why = f"{where} replaces the root's {compared} under {directory.relative_to(root)}/"
+                problems.append((ERROR, f"{why}; remove it, and keep its settings in the root's {compared}."))
+    return problems
+
+
 # Cargo commands CI runs, which an [alias] in .cargo/config.toml could replace.
 CI_COMMANDS = {"clippy", "check", "build", "test", "nextest", "deny", "shear", "mutants", "fmt", "doc", "run"}
 # Variables that change how CI's tools build, lint or test, which [env] would
@@ -478,6 +525,7 @@ def main():
     manifest, members, problems_reading = workspace_members()
     problems += problems_reading
     problems += check_members(manifest, members)
+    problems += check_tool_configs(members)
     problems += check_cargo_config()
     for level, message in sorted(problems, key=lambda p: (p[0] != ERROR, p[1])):
         print(f"::{level} title=rust-ci baseline drift::{message}")

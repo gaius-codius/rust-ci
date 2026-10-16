@@ -134,6 +134,20 @@ run_case "missing lint is a warning" 0 "::warning title=rust-ci baseline drift::
 run_case "Cargo.toml without lints is a warning" 0 "has no [workspace.lints]" "no drift" \
   <<<"printf '[workspace]\n' >Cargo.toml"
 
+# Config files that replace the root's clippy.toml and rustfmt.toml.
+run_case "root .clippy.toml is an error" 1 ".clippy.toml is read in place of clippy.toml" "no drift" \
+  <<<"echo 'allow-panic-in-tests = false' >.clippy.toml"
+run_case "root .rustfmt.toml is an error" 1 ".rustfmt.toml is read in place of rustfmt.toml" "no drift" \
+  <<<"cp rustfmt.toml .rustfmt.toml"
+run_case "member clippy.toml is an error" 1 "crates/a/clippy.toml replaces the root's clippy.toml under crates/a/" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && touch crates/a/clippy.toml"
+run_case "rustfmt.toml in a member's sources is an error" 1 "crates/a/src/x/.rustfmt.toml replaces the root's rustfmt.toml" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p crates/a/src/x && touch crates/a/src/x/.rustfmt.toml"
+run_case "clippy.toml above a member is an error" 1 "crates/clippy.toml replaces the root's clippy.toml under crates/" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && touch crates/clippy.toml"
+run_case "config files outside the members are not drift" 0 "no drift" "::" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p docs crates/a/target crates/a/vendored && touch docs/clippy.toml crates/a/target/rustfmt.toml crates/a/vendored/.git crates/a/vendored/rustfmt.toml"
+
 # .cargo/config.toml.
 run_case "capped lints in rustflags are an error" 1 '.cargo/config.toml: build.rustflags has "--cap-lints allow", which turns lints off' "no drift" \
   <<<"mkdir .cargo && printf '[build]\nrustflags = [\"--cap-lints\", \"allow\"]\n' >.cargo/config.toml"
