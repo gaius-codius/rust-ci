@@ -12,6 +12,11 @@ Errors (they fail the job):
   pull request's base), read from git; without it nothing counts as removed;
 - a workspace member whose Cargo.toml lacks `[lints] workspace = true`, or
   whose [lints] table sets lints of its own instead;
+- a root .cargo/config.toml (or .cargo/config) that loosens what CI runs:
+  rustflags or rustdocflags that allow or cap lints, `build.warnings =
+  "allow"`, a rustc or rustdoc of its own or a rustc wrapper other than
+  sccache, an [alias] for a command CI runs, or an [env] variable that CI's
+  tools read. A test `runner` is a warning;
 - a file that can't be read or parsed, or a check that could not run.
 
 Warnings: a baseline setting, list item or file the project doesn't have and
@@ -358,6 +363,105 @@ def check_members(manifest, members):
     return problems
 
 
+# Cargo commands CI runs, which an [alias] in .cargo/config.toml could replace.
+CI_COMMANDS = {"clippy", "check", "build", "test", "nextest", "deny", "shear", "mutants", "fmt", "doc", "run"}
+# Variables that change how CI's tools build, lint or test, which [env] would
+# set for every process cargo starts.
+CI_VARIABLES = {
+    "RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_ENCODED_RUSTDOCFLAGS",
+    "CARGO_BUILD_RUSTFLAGS",
+    "CARGO_BUILD_RUSTDOCFLAGS",
+    "CARGO_BUILD_WARNINGS",
+    "CLIPPY_CONF_DIR",
+    "CLIPPY_ARGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+}
+
+
+def weakening_flags(flags):
+    """The rustc flags that turn lints off or cap them."""
+    if isinstance(flags, str):
+        flags = flags.split()
+    if not isinstance(flags, list):
+        return []
+    flags = [str(flag) for flag in flags]
+    found = []
+    for i, flag in enumerate(flags):
+        if flag in ("-A", "--allow", "--cap-lints"):
+            found.append(" ".join(flags[i : i + 2]))
+        elif flag.startswith(("-A", "--allow=", "--cap-lints=")):
+            found.append(flag)
+    return found
+
+
+def check_cargo_config():
+    """The root .cargo/config.toml must not loosen what CI runs.
+
+    It can cap or allow lints through rustflags, replace a command CI runs
+    with an alias, set variables the tools read, or put a wrapper around rustc.
+    """
+    problems = []
+    for name in (".cargo/config.toml", ".cargo/config"):
+        path = Path(name)
+        if not path.is_file():
+            continue
+        try:
+            config = tomllib.loads(path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as err:
+            problems.append((ERROR, f"could not read {name}, so it was not checked: {err}"))
+            continue
+        sections = [("build", config.get("build", {}))]
+        targets = config.get("target", {})
+        if isinstance(targets, dict):
+            sections += [(f"target.{triple}", target) for triple, target in targets.items()]
+        for section, settings in sections:
+            if not isinstance(settings, dict):
+                continue
+            for key in ("rustflags", "rustdocflags"):
+                for flag in weakening_flags(settings.get(key)):
+                    problems.append(
+                        (ERROR, f"{name}: {section}.{key} has {show(flag)}, which turns lints off; remove it.")
+                    )
+            if isinstance(settings.get("runner"), (str, list)):
+                runner = show(settings["runner"])
+                problems.append(
+                    (WARNING, f"{name}: {section}.runner runs the tests through {runner}; check it passes on their result.")
+                )
+        build = config.get("build", {})
+        if isinstance(build, dict):
+            if build.get("warnings") == "allow":
+                problems.append((ERROR, f'{name}: build.warnings is "allow"; remove it.'))
+            for key in ("rustc", "rustdoc", "rustc-wrapper", "rustc-workspace-wrapper"):
+                value = build.get(key)
+                if value in (None, ""):
+                    continue
+                stem = Path(str(value)).name.removesuffix(".exe")
+                if key.endswith("wrapper") and stem == "sccache":
+                    continue
+                problems.append(
+                    (ERROR, f"{name}: build.{key} is {show(value)}, which CI's results would come from; remove it.")
+                )
+        aliases = config.get("alias", {})
+        if isinstance(aliases, dict):
+            for alias in sorted(aliases.keys() & CI_COMMANDS):
+                problems.append(
+                    (ERROR, f"{name}: [alias] replaces `cargo {alias}`, which CI runs; remove or rename the alias.")
+                )
+        env = config.get("env", {})
+        if isinstance(env, dict):
+            for variable in sorted(env):
+                if variable in CI_VARIABLES or variable.startswith("NEXTEST_"):
+                    problems.append(
+                        (ERROR, f"{name}: [env] sets {variable}, which changes how CI builds, lints or tests; remove it.")
+                    )
+    return problems
+
+
 def main():
     problems = []
     ref = os.environ.get("DRIFT_BASE_REF", "").strip() or None
@@ -374,6 +478,7 @@ def main():
     manifest, members, problems_reading = workspace_members()
     problems += problems_reading
     problems += check_members(manifest, members)
+    problems += check_cargo_config()
     for level, message in sorted(problems, key=lambda p: (p[0] != ERROR, p[1])):
         print(f"::{level} title=rust-ci baseline drift::{message}")
     if not problems:

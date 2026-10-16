@@ -134,6 +134,26 @@ run_case "missing lint is a warning" 0 "::warning title=rust-ci baseline drift::
 run_case "Cargo.toml without lints is a warning" 0 "has no [workspace.lints]" "no drift" \
   <<<"printf '[workspace]\n' >Cargo.toml"
 
+# .cargo/config.toml.
+run_case "capped lints in rustflags are an error" 1 '.cargo/config.toml: build.rustflags has "--cap-lints allow", which turns lints off' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nrustflags = [\"--cap-lints\", \"allow\"]\n' >.cargo/config.toml"
+run_case "allowed lints in target rustflags are an error" 1 'target.x86_64-unknown-linux-gnu.rustflags has "-Aclippy::all"' "no drift" \
+  <<<"mkdir .cargo && printf '[target.x86_64-unknown-linux-gnu]\nrustflags = \"-C debuginfo=1 -Aclippy::all\"\n' >.cargo/config.toml"
+run_case "alias over a CI command is an error" 1 '.cargo/config.toml: [alias] replaces `cargo clippy`' "no drift" \
+  <<<"mkdir .cargo && printf '[alias]\nclippy = \"check\"\nxtask = \"run -p xtask --\"\n' >.cargo/config.toml"
+run_case "legacy .cargo/config is checked" 1 '.cargo/config: [env] sets CLIPPY_ARGS' "no drift" \
+  <<<"mkdir .cargo && printf '[env]\nCLIPPY_ARGS = \"-Aclippy::all\"\nMY_SETTING = \"1\"\n' >.cargo/config"
+run_case "rustc wrapper is an error" 1 'build.rustc-wrapper is "./fake-rustc"' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nrustc-wrapper = \"./fake-rustc\"\nwarnings = \"allow\"\n' >.cargo/config.toml"
+run_case "allowed build warnings are an error" 1 'build.warnings is "allow"' "no drift" \
+  <<<"mkdir .cargo && printf '[build]\nwarnings = \"allow\"\n' >.cargo/config.toml"
+run_case "sccache and plain rustflags are not drift" 0 "no drift" "::" \
+  <<<"mkdir .cargo && printf '[build]\nrustc-wrapper = \"/usr/bin/sccache\"\nrustflags = [\"-C\", \"target-cpu=native\", \"-Dwarnings\"]\n' >.cargo/config.toml"
+run_case "test runner is a warning" 0 '::warning title=rust-ci baseline drift::.cargo/config.toml: target.x86_64-unknown-linux-gnu.runner runs the tests through "qemu"' "::error" \
+  <<<"mkdir .cargo && printf '[target.x86_64-unknown-linux-gnu]\nrunner = \"qemu\"\n' >.cargo/config.toml"
+run_case "unparsable cargo config is an error" 1 "could not read .cargo/config.toml" "no drift" \
+  <<<"mkdir .cargo && echo 'not = = toml' >.cargo/config.toml"
+
 # Removed since the base commit.
 BASE_REF=HEAD run_case "base commit without changes is no drift" 0 "no drift" "::" \
   <<<"commit_base"
