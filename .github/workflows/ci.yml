@@ -66,7 +66,8 @@ jobs:
 
   actions:
     # This commit's drift action against the fixture, which must show no drift
-    # (rust.yml only warns, so a drifting fixture would pass there).
+    # (a baseline setting missing from the fixture is only a warning, so it
+    # would pass in rust.yml).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -98,11 +98,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # On a pull request the drift check reads the base commit's files, so
+          # it needs the history; elsewhere one commit is enough.
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
 
       - name: Compare with the rust-ci baseline
         # $/ is this repository (rust-ci) at the commit the caller pinned, so the
         # drift check and its baseline always come from the same release.
         uses: $/actions/baseline-drift
+        with:
+          # A baseline setting the pull request removes is an error. Empty on
+          # other events.
+          base-ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install

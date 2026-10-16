@@ -5,10 +5,10 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 | Piece | Where | How a project uses it |
 |---|---|---|
 | Reusable workflow | `.github/workflows/rust.yml` | Called from the project's `ci.yml` |
-| Baseline drift check | `actions/baseline-drift` | Run by the workflow's `lint` job; warns, never fails |
+| Baseline drift check | `actions/baseline-drift` | Run by the workflow's `lint` job; fails on a weakened setting, warns on a missing one |
 | Formatting, toolchain, test profiles | `baseline/rustfmt.toml`, `baseline/rust-toolchain.toml`, `baseline/.config/nextest.toml` | Copied to the project as they are |
 | Lints | `baseline/workspace-lints.toml` | Its `[workspace.lints]` tables copied into the root `Cargo.toml`; a project may add lints |
-| Dependency policy, spelling | `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds bans, exceptions, excludes and words |
+| Clippy settings, dependency policy, spelling | `baseline/clippy.toml`, `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds settings, bans, exceptions, excludes and words |
 | Git hooks | `lefthook/rust.yml` | Loaded through lefthook `remotes:`, pinned to a tag |
 | Claude Code hooks | `agent/claude-rust-*.sh` | Symlinked into `~/.claude/hooks/` and registered in `~/.claude/settings.json` (user-level, once per machine) |
 | What moved where | `docs/inventory.md` | Every job, step and hook of nota and conspector, marked shared or project-only |
@@ -19,7 +19,7 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 
 | Job | Steps |
 |---|---|
-| `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked`; `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
+| `lint` | Drift from this baseline (see below); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked`; `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
 | `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
@@ -49,10 +49,17 @@ Inputs:
 The drift check compares the project's copies with this release's `baseline/`:
 
 - `rustfmt.toml` and `rust-toolchain.toml` must hold exactly the baseline's settings.
-- `.config/nextest.toml`, `deny.toml`, `typos.toml` and the `[workspace.lints]` tables in `Cargo.toml` must hold every baseline setting with the baseline's value; a list must hold at least the baseline's items. A project's own additions are not drift.
+- `.config/nextest.toml`, `clippy.toml`, `deny.toml`, `typos.toml` and the `[workspace.lints]` tables in `Cargo.toml` must hold every baseline setting with the baseline's value or a stricter one; a list must hold at least the baseline's items. A project's own additions are not drift.
+- Every workspace member's `Cargo.toml` (the root package, the `members` globs and path dependencies inside the workspace, less `exclude`) must have `[lints] workspace = true` and nothing else in `[lints]`.
 - Comments and formatting are not compared.
 
-Each difference is a warning annotation on the `lint` job. The check never fails the job.
+Each difference is an annotation on the `lint` job. These are errors, and fail the job:
+
+- A setting the project has with a weaker value. Stricter is fine where values have an order: lint levels (`allow` < `warn` < `deny` < `forbid`; a `{ level, priority }` table compares by level, and its priority must equal the baseline's), cargo-deny severities (`allow` < `warn` < `deny`), the scope of `advisories.unmaintained` and `unsound` (`all` covers `workspace` and `transitive`; `none` covers neither), a higher `licenses.confidence-threshold`, and `false` for clippy's `allow-*-in-tests`. Any other value that differs from the baseline's is an error, as is a setting in `rustfmt.toml` or `rust-toolchain.toml` that isn't in the baseline. A toolchain other than the baseline's is drift too: bump `rust-toolchain.toml` in the same change as the pin.
+- On a pull request, a baseline setting, list item or file the project had at the pull request's base commit and no longer has. The `lint` job fetches the full history on pull requests to read the base.
+- A workspace member that doesn't take the workspace lints, or a file that can't be parsed.
+
+A baseline setting, list item or file the project doesn't have yet (and didn't have at the base) is a warning: that is how a new baseline item reaches projects that haven't copied it.
 
 ## Adopting it
 
@@ -62,11 +69,11 @@ Run these from the project's root.
 
    ```sh
    RUSTCI=/path/to/rust-ci   # a clone of this repo at the tag you pin
-   cp "$RUSTCI/baseline/rustfmt.toml" "$RUSTCI/baseline/rust-toolchain.toml" .
+   cp "$RUSTCI/baseline/rustfmt.toml" "$RUSTCI/baseline/rust-toolchain.toml" "$RUSTCI/baseline/clippy.toml" .
    mkdir -p .config && cp "$RUSTCI/baseline/.config/nextest.toml" .config/
    ```
 
-   Copy the two tables in `baseline/workspace-lints.toml` into the root `Cargo.toml`, and start `deny.toml` and `typos.toml` from the baseline's, adding the project's own bans, licence exceptions, excludes and words. Keep `rust-version` in `Cargo.toml` equal to the toolchain.
+   Copy the two tables in `baseline/workspace-lints.toml` into the root `Cargo.toml`, give every member crate's `Cargo.toml` `[lints] workspace = true`, and start `deny.toml` and `typos.toml` from the baseline's, adding the project's own bans, licence exceptions, excludes and words. A project's own clippy settings go in `clippy.toml` after the baseline's. Keep `rust-version` in `Cargo.toml` equal to the toolchain.
 
 2. **CI.** Replace the project's lint, test, deps and workflow-lint jobs in `.github/workflows/ci.yml`:
 
@@ -173,6 +180,6 @@ A release is one commit tagged `v1.x.y`:
 
 A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
 
-A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A baseline change that projects haven't copied yet only warns, through the drift check.
+A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A new baseline setting that projects haven't copied yet only warns, through the drift check; a changed value (a toolchain bump) fails it until the project copies the change, which it does in the same change as its pin.
 
 CI runs `tests/test-drift.sh` (the drift check's cases), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
