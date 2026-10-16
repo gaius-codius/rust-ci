@@ -227,6 +227,31 @@ edit "a large file (over the argument size limit) is still judged" crates/lib/sr
 fn f10()' ask "#[allow(warnings)]"
 edit "a large file's normal edit does not ask" crates/lib/src/big.rs 'fn f10()' 'fn g10()' silent
 
+# Removing or narrowing a deny, forbid or warn attribute asks; moving one doesn't.
+d_rs='#![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
+#[warn(missing_docs)]
+pub fn a() {}
+'
+printf '%s' "${d_rs}" >"${r}/crates/lib/src/d.rs"
+edit "removing a #![forbid] asks" crates/lib/src/d.rs '#![forbid(unsafe_code)]
+' '' ask "#![forbid(unsafe_code)]"
+edit "narrowing a #![deny] list asks" crates/lib/src/d.rs 'clippy::unwrap_used, clippy::expect_used' 'clippy::unwrap_used' ask "#![deny("
+edit "turning #[warn] into #[allow] asks" crates/lib/src/d.rs '#[warn(missing_docs)]' '#[allow(missing_docs)]' ask
+edit "respacing a #![deny] does not ask" crates/lib/src/d.rs '#![deny(clippy::unwrap_used, clippy::expect_used)]' '#![deny( clippy::unwrap_used,  clippy::expect_used )]' silent
+edit "an unrelated edit next to a #![deny] does not ask" crates/lib/src/d.rs 'pub fn a() {}' 'pub fn b() {}' silent
+write "a Write dropping a #![deny] asks" crates/lib/src/d.rs '#![forbid(unsafe_code)]
+
+#[warn(missing_docs)]
+pub fn a() {}
+' ask "#![deny("
+write "a Write moving the lint attributes does not ask" crates/lib/src/d.rs "// moved
+${d_rs}" silent
+edit "an edit whose old text isn't in the file is judged on its own text" crates/lib/src/d.rs '#![deny(clippy::panic)]' '' ask "#![deny(clippy::panic)]"
+bash_cmd "sed -i deleting a deny line asks" "sed -i '/deny(/d' crates/lib/src/d.rs" ask "deny or forbid"
+bash_cmd "grep for deny in a .rs file does not ask" "grep -n deny crates/lib/src/d.rs" silent
+
 # .rs files: other ways to make a test or a lint go away.
 edit "an edit adding #[should_panic] asks" crates/lib/src/lib.rs 'pub fn a() {}' '#[test] #[should_panic] fn t() {}' ask "#[should_panic]"
 edit "an edit adding #[should_panic(expected)] asks" crates/lib/src/lib.rs 'pub fn a() {}' '#[test]

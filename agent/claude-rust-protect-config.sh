@@ -28,9 +28,11 @@
 #   #[cfg(not(all()))] / #[cfg(false)] / #[cfg(miri)]. The attributes of the file
 #   after the change are compared with the file before, so a wider suppression in
 #   place of a narrow one asks. Any file when the change adds a gitleaks:allow.
-#   Removing one never asks.
+#   Removing one never asks. Removing or narrowing a deny, forbid or warn attribute
+#   (or a cfg_attr applying one) asks too: a crate's #![deny(...)] is a check.
 #   Bash, best effort: a command that names a protected file (or any Cargo.toml, or a
-#   .rs file together with a suppression attribute, or gitleaks:allow) and either
+#   .rs file together with a suppression attribute or the word deny or forbid, or
+#   gitleaks:allow) and either
 #   writes with sed -i, perl -i, tee, mv, cp, rm, truncate, ln, install, patch,
 #   git checkout/restore/rm/mv/apply, or redirects into one. A write through any other
 #   program (python, a script, cargo itself) is not seen; a read with cp is asked.
@@ -139,6 +141,10 @@ kind() {
 # (whitespace tolerant, and a sed script's \[ and \( count).
 attr_re='#\s*!?\s*\[(?:[^\]"]|"(?:[^"\\]|\\.)*")*\]'
 suppress_re='^#!?\[((allow|expect|ignore|should_panic|rustfmt::skip)\b|cfg\((any\(\)|not\(all\(\)\)|false|miri)\)|cfg_attr\(.*(\b(allow|expect|ignore|should_panic)\b|rustfmt::skip))'
+# strict_re picks the attributes that make lints stricter, whose removal asks;
+# strict_ere is its Bash counterpart, any deny or forbid in the command.
+strict_re='^#!?\[(deny|forbid|warn)\(|^#!?\[cfg_attr\(.*\b(deny|forbid|warn)\('
+strict_ere='(^|[^[:alnum:]_])(deny|forbid)([^[:alnum:]_]|$)'
 suppress_ere='#[[:space:]]*!?[[:space:]]*\\?\[[[:space:]]*(allow|expect|ignore|should_panic|rustfmt[[:space:]]*::[[:space:]]*skip)([^[:alnum:]_]|$)|cfg_attr[[:space:]]*\\?\(.*([^[:alnum:]_](allow|expect|ignore|should_panic)|rustfmt[[:space:]]*::[[:space:]]*skip)([^[:alnum:]_]|$)|#[[:space:]]*!?[[:space:]]*\\?\[[[:space:]]*cfg[[:space:]]*\\?\([[:space:]]*(any[[:space:]]*\\?\([[:space:]]*\\?\)|not[[:space:]]*\\?\([[:space:]]*all[[:space:]]*\\?\([[:space:]]*\\?\)[[:space:]]*\\?\)|false|miri)[[:space:]]*\\?\)'
 
 [[ ${RUST_CI_PROTECT_CONFIG:-} == off ]] && exit 0
@@ -194,6 +200,11 @@ if [[ $tool == Bash ]]; then
   if [[ -z $target ]] && grep -Eq -- '\.rs([^[:alnum:]_]|$)' <<<"$cmd" && grep -Eq -- "$suppress_ere" <<<"$cmd"; then
     if grep -Eq -- "$writers" <<<"$cmd" || grep -Eq -- "${redirect}\.rs" <<<"$cmd"; then
       target="a .rs file, adding a lint or test suppression (#[allow], #[expect], #[ignore], #[should_panic], #[rustfmt::skip] or a disabling cfg)"
+    fi
+  fi
+  if [[ -z $target ]] && grep -Eq -- '\.rs([^[:alnum:]_]|$)' <<<"$cmd" && grep -Eq -- "$strict_ere" <<<"$cmd"; then
+    if grep -Eq -- "$writers" <<<"$cmd" || grep -Eq -- "${redirect}\.rs" <<<"$cmd"; then
+      target="a .rs file, with a deny or forbid attribute it may remove or loosen"
     fi
   fi
   if [[ -z $target ]] && grep -q -- 'gitleaks:allow' <<<"$cmd"; then
@@ -336,5 +347,24 @@ added=$(printf '%s' "$input" | jq -r "${cur[@]}" --arg attr "$attr_re" --arg re 
   end | unique | join(", ")' 2>/dev/null) || say "could not read the edit with jq, so this change to $rel was not checked for added suppressions."
 if [[ -n $added ]]; then
   ask "this edit adds a suppression to $rel ($added). Silencing a lint, ignoring a test, compiling code out or hiding a line from secret scanning can hide a real problem, so a human approves it."
+fi
+
+# The other way round: a deny, forbid or warn attribute the file had and loses, or
+# one that loses a lint from its list. Moving or respacing one stays silent.
+if [[ $k == rust ]]; then
+  removed=$(printf '%s' "$input" | jq -r "${cur[@]}" --arg attr "$attr_re" --arg re "$strict_re" "$after"'
+    def found: [match($attr; "g") | .string | gsub("\\s+"; "") | select(test($re))];
+    def more($old): ($old | group_by(.) | map({key: .[0], value: length}) | from_entries) as $c
+      | group_by(.) | map(select(length > ($c[.[0]] // 0)) | .[0]);
+    if .tool_name == "Write" then (.tool_input.content // "") as $n | $cur | found | more($n | found)
+    else reduce edits[] as $e ({text: $cur, also: []};
+        (.text | edited($e)) as $t
+        | if $t == null then .also += (($e.old_string // "") | found | more(($e.new_string // "") | found))
+          else .text = $t end)
+      | .also as $also | .text as $t | ($cur | found | more($t | found)) + $also
+    end | unique | join(", ")' 2>/dev/null) || say "could not read the edit with jq, so this change to $rel was not checked for removed lint attributes."
+  if [[ -n $removed ]]; then
+    ask "this edit removes or narrows a lint attribute in $rel ($removed). A deny or forbid in the code is a check, so a human approves loosening it."
+  fi
 fi
 exit 0
