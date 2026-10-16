@@ -1,0 +1,35 @@
+# Code owners for the files that control a Rust project's checks. Copy to
+# .github/CODEOWNERS and replace @gaius-codius with the project's owner or team.
+#
+# On its own this file only requests reviews. It protects the checks when a branch
+# ruleset on the default branch requires a pull request with "Require review from
+# Code Owners": then no change that loosens a lint, a dependency policy, the
+# toolchain or a workflow merges without the owner's approval, whoever (or whatever
+# agent) wrote it. The Claude Code hook agent/claude-rust-protect-config.sh asks for
+# the same files before an agent edits them; this is the gate that holds on the server.
+#
+# Later lines win, so keep project-specific entries below these.
+
+# Lints and lint config. Cargo.toml also holds dependencies, so every manifest change
+# needs the owner; narrow this if that's too much review.
+Cargo.toml                  @gaius-codius
+clippy.toml                 @gaius-codius
+.clippy.toml                @gaius-codius
+
+# Formatting, toolchain, test profiles, dependency policy, spelling.
+rustfmt.toml                @gaius-codius
+.rustfmt.toml               @gaius-codius
+/rust-toolchain.toml        @gaius-codius
+/rust-toolchain             @gaius-codius
+/.config/nextest.toml       @gaius-codius
+/deny.toml                  @gaius-codius
+/typos.toml                 @gaius-codius
+/_typos.toml                @gaius-codius
+/.typos.toml                @gaius-codius
+
+# CI, git hooks, secret scanning, and this file.
+/.github/workflows/         @gaius-codius
+/.github/actions/           @gaius-codius
+/lefthook.yml               @gaius-codius
+/.gitleaks.toml             @gaius-codius
+/.github/CODEOWNERS         @gaius-codius
