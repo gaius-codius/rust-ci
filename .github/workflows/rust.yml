@@ -59,9 +59,11 @@ on:
         description: >-
           The test run: "cargo nextest run" and its arguments, written out in full so a
           project's own checks can read the arguments in its ci.yml. The arguments are
-          split on spaces.
+          split on spaces. --no-tests=fail fails a run that finds no tests (a filter or
+          a target that matches nothing); a workspace without tests yet passes
+          --no-tests=pass.
         type: string
-        default: cargo nextest run --workspace --locked --profile ci --no-tests=pass
+        default: cargo nextest run --workspace --locked --profile ci --no-tests=fail
       post-test-script:
         description: >-
           A script the test job runs after the tests, a path from the repository root, for

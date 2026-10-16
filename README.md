@@ -40,7 +40,7 @@ Inputs:
 | `target-dir` | `""` | Persistent self-hosted runners: an absolute directory that keeps each job's build between runs (`<target-dir>/<owner>/<repo>/<job>`) in place of the GitHub cache, which is slower there than an incremental build. Prune it on the runner |
 | `pre-test-action` | `false` | Run the project's composite action at `.github/actions/pre-test` before the tests. For setup that needs other actions (a cache) or sets variables for the tests (written to `$GITHUB_ENV`) |
 | `pre-test-script` | `""` | A script run before the tests |
-| `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=pass` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces |
+| `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=fail` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces. `--no-tests=fail` fails a run that finds no tests; a workspace with none yet passes the command with `--no-tests=pass`. Changed in v2.0.0 (v1 defaulted to `--no-tests=pass`) |
 | `post-test-script` | `""` | A script run after the tests, for checks that reuse the test build |
 | `doctest` | `true` | Run doctests. Turn off while the workspace has no library crate (`cargo test --doc` fails without one) |
 | `doc-all-features` | `false` | Build the docs with `--all-features` |
@@ -174,5 +174,9 @@ A release is one commit tagged `v1.x.y`:
 A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
 
 A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A baseline change that projects haven't copied yet only warns, through the drift check.
+
+v2.0.0 is the first major version after v1. What can fail a project that passed on v1:
+
+- `test-command` defaults to `--no-tests=fail`. A project with no tests yet passes its command with `--no-tests=pass`.
 
 CI runs `tests/test-drift.sh` (the drift check's cases), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.

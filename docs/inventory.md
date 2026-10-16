@@ -44,7 +44,7 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 | Job (old check name) | Step | Now |
 |---|---|---|
 | lint (`fmt, clippy, typos`) | checkout, toolchain, cache, fmt, clippy, `cargo doc` (no `--all-features`), typos | Shared, `rust / lint` |
-| test (`Tests (Linux)`) | checkout, toolchain, cache, nextest `--workspace --locked --profile ci --no-tests=pass` | Shared, `rust / test` (the default `test-command`) |
+| test (`Tests (Linux)`) | checkout, toolchain, cache, nextest `--workspace --locked --profile ci --no-tests=pass` | Shared, `rust / test` (the v1 default `test-command`; v2.0.0's default is `--no-tests=fail`, so on v2 it passes this command as `test-command`) |
 | | doctests: none yet (no library crate) | Shared, `rust / test` with `doctest: false` until the first library crate |
 | deps (`Dependencies (cargo-deny, cargo-shear)`) | cargo-deny, cargo-shear | Shared, `rust / deps` |
 | workflows (`Workflow lint (actionlint, zizmor)`) | actionlint, zizmor | Shared, `rust / workflows` |
