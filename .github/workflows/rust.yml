@@ -117,7 +117,8 @@ on:
         description: >-
           Extra arguments to `cargo mutants`, split on spaces, for example
           "--test-tool nextest" (cargo-nextest is installed) or "--timeout 120". The job
-          already passes --in-diff, --in-place and --output.
+          already passes --in-diff, --in-place, --output and --no-config: the pull
+          request's .cargo/mutants.toml is not read, so cargo-mutants options go here.
         type: string
         default: ""
 
@@ -270,10 +271,12 @@ jobs:
           SCRIPT: ${{ inputs.pre-test-script }}
         run: '"./${SCRIPT}"'
 
+      # The latest version install-action v2.87.22 knows; the mutants job
+      # installs the same one.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.146
 
       - name: Run the tests
         shell: bash
@@ -371,21 +374,24 @@ jobs:
           SCRIPT: ${{ inputs.pre-test-script }}
         run: '"./${SCRIPT}"'
 
-      # cargo-nextest for a project that passes --test-tool nextest.
+      # cargo-nextest for a project that passes --test-tool nextest, the same
+      # version as the test job's.
       - name: Install cargo-mutants and cargo-nextest
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-mutants@27.1.0,cargo-nextest
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
 
       # A pull request's own .gitattributes can mark a file binary or -diff,
       # which would leave its changes out of the diff: $GIT_DIR/info/attributes
       # comes before every .gitattributes, and "diff" makes every file a text
       # diff (NUL bytes too). The diff prefixes are spelled out because a
       # runner's git config can change them, and cargo-mutants reads the paths
-      # after them. --in-place mutates the checkout, which the job throws away,
-      # so the build uses the cached or kept target directory. An empty diff,
-      # or one without Rust files, passes; a surviving mutant fails the step
-      # (exit 2), and so does a mutant that times out (exit 3).
+      # after them. --no-config leaves out the pull request's
+      # .cargo/mutants.toml, which could exclude every mutant. --in-place
+      # mutates the checkout, which the job throws away, so the build uses the
+      # cached or kept target directory. An empty diff, or one without Rust
+      # files, passes; a surviving mutant fails the step (exit 2), and so does a
+      # mutant that times out (exit 3).
       - name: Mutation-test the pull request's diff
         shell: bash
         env:
@@ -400,8 +406,8 @@ jobs:
           git diff --no-color --no-ext-diff --no-textconv --text \
             --src-prefix=a/ --dst-prefix=b/ "${BASE_SHA}...HEAD" >"${out}/pr.diff"
           read -r -a args <<<"${MUTANTS_ARGUMENTS}"
-          echo "cargo mutants --in-diff pr.diff --in-place ${args[*]}"
-          cargo mutants --in-diff "${out}/pr.diff" --in-place \
+          echo "cargo mutants --no-config --in-diff pr.diff --in-place ${args[*]}"
+          cargo mutants --no-config --in-diff "${out}/pr.diff" --in-place \
             --output "${out}" "${args[@]}"
 
   deps:
