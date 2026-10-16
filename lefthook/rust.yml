@@ -16,9 +16,9 @@ pre-commit:
       run: typos --force-exclude {staged_files}
     # The staged changes only (--pre-commit reads the diff, --staged the
     # index); secrets are redacted. The project's .gitleaks.toml and
-    # .gitleaksignore apply.
+    # .gitleaksignore apply; inline gitleaks:allow comments don't, as in CI.
     secrets:
-      run: gitleaks git --pre-commit --staged --redact --verbose --no-banner
+      run: gitleaks git --pre-commit --staged --redact --verbose --no-banner --ignore-gitleaks-allow
     workflows:
       glob: ".github/workflows/*"
       run: actionlint && uvx zizmor@1.30.1 --offline .github/workflows/
