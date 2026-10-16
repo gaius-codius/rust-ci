@@ -61,6 +61,26 @@ jobs:
       - name: Test the new-dependency report
         run: ./tests/test-new-deps.sh
 
+      # The same release binary and digest as rust.yml's secrets job.
+      - name: Install gitleaks
+        shell: bash
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "${dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check -
+          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
+          echo "${dir}" >>"${GITHUB_PATH}"
+
+      - name: Test that a pull request's .gitattributes can't hide its changes
+        run: ./tests/test-gitattributes.sh
+
   rust-workflow:
     # Runs rust.yml as a project would, against the fixture workspace at the
     # repository root (Cargo.toml, crates/fixture, and symlinks to the

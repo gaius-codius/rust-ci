@@ -96,10 +96,16 @@ on:
         default: ""
       gitleaks-arguments:
         description: >-
-          Extra arguments to gitleaks in the secrets job, split on spaces, for example
-          --ignore-gitleaks-allow.
+          Extra arguments to gitleaks in the secrets job, split on spaces.
         type: string
         default: ""
+      gitleaks-allow-comments:
+        description: >-
+          Honour inline gitleaks:allow comments in the secrets job. Off, the job passes
+          --ignore-gitleaks-allow, so a secret can't be waved through in the change
+          that adds it; .gitleaksignore still applies.
+        type: boolean
+        default: false
       mutants:
         description: >-
           Add the mutants job: on pull requests, cargo-mutants tests the code the pull
@@ -371,22 +377,28 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest
 
-      # The diff prefixes are spelled out because a runner's git config can
-      # change them, and cargo-mutants reads the paths after them. --in-place
-      # mutates the checkout, which the job throws away, so the build uses the
-      # cached or kept target directory. An empty diff, or one without Rust
-      # files, passes; a surviving mutant fails the step (exit 2), and so does a
-      # mutant that times out (exit 3).
+      # A pull request's own .gitattributes can mark a file binary or -diff,
+      # which would leave its changes out of the diff: $GIT_DIR/info/attributes
+      # comes before every .gitattributes, and "diff" makes every file a text
+      # diff (NUL bytes too). The diff prefixes are spelled out because a
+      # runner's git config can change them, and cargo-mutants reads the paths
+      # after them. --in-place mutates the checkout, which the job throws away,
+      # so the build uses the cached or kept target directory. An empty diff,
+      # or one without Rust files, passes; a surviving mutant fails the step
+      # (exit 2), and so does a mutant that times out (exit 3).
       - name: Mutation-test the pull request's diff
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MUTANTS_ARGUMENTS: ${{ inputs.mutants-arguments }}
         run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
           out="${RUNNER_TEMP}/mutants"
           mkdir -p "${out}"
-          git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
-            "${BASE_SHA}...HEAD" >"${out}/pr.diff"
+          git diff --no-color --no-ext-diff --no-textconv --text \
+            --src-prefix=a/ --dst-prefix=b/ "${BASE_SHA}...HEAD" >"${out}/pr.diff"
           read -r -a args <<<"${MUTANTS_ARGUMENTS}"
           echo "cargo mutants --in-diff pr.diff --in-place ${args[*]}"
           cargo mutants --in-diff "${out}/pr.diff" --in-place \
@@ -521,6 +533,11 @@ jobs:
       # history once merged. Other events: the files in the checkout (dir
       # mode), which needs no history and doesn't fail again on a secret that
       # was removed and rotated long ago. Secrets are redacted in the log.
+      # Inline gitleaks:allow comments are ignored unless the input allows
+      # them (--ignore-gitleaks-allow passed twice is fine). A pull request's
+      # own .gitattributes can mark a file binary or -diff, which hides its
+      # changes from git mode: $GIT_DIR/info/attributes comes before every
+      # .gitattributes, and "diff" makes every file a text diff (NUL bytes too).
       - name: gitleaks
         shell: bash
         env:
@@ -528,8 +545,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CONFIG_PATH: ${{ inputs.gitleaks-config }}
           GITLEAKS_ARGUMENTS: ${{ inputs.gitleaks-arguments }}
+          ALLOW_COMMENTS: ${{ inputs.gitleaks-allow-comments }}
         run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
           args=(--redact --verbose --no-banner)
+          if [[ ${ALLOW_COMMENTS} != true ]]; then
+            args+=(--ignore-gitleaks-allow)
+          fi
           if [[ -n ${CONFIG_PATH} ]]; then
             args+=(--config "${CONFIG_PATH}")
           fi
