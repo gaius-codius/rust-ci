@@ -68,6 +68,8 @@ Run these from the project's root.
 
    Copy the two tables in `baseline/workspace-lints.toml` into the root `Cargo.toml`, and start `deny.toml` and `typos.toml` from the baseline's, adding the project's own bans, licence exceptions, excludes and words. Keep `rust-version` in `Cargo.toml` equal to the toolchain.
 
+   Besides clippy's pedantic group, the lints reject `unwrap`, `expect`, `panic!`, `todo!` and `dbg!`; errors dropped with `let _ =`, a discarded `.ok()` or `.map_err(|_| ...)`; unwrapping or panicking in a function that returns `Result`; `print!`, `eprint!` and `std::process::exit`. A binary writes its output through a writer such as `std::io::stdout().lock()`, or under `#[expect(clippy::print_stdout, reason = "...")]`, and returns an `ExitCode` from `main`. Each lint is "warn"; the workflow's `CARGO_BUILD_WARNINGS=deny` makes it fail CI.
+
 2. **CI.** Replace the project's lint, test, deps and workflow-lint jobs in `.github/workflows/ci.yml`:
 
    ```yaml
@@ -173,6 +175,6 @@ A release is one commit tagged `v1.x.y`:
 
 A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
 
-A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A baseline change that projects haven't copied yet only warns, through the drift check.
+A change that would fail a project that passed before (a stricter lint in the baseline, a new required input, a new job) is a new major version. A baseline change that projects haven't copied yet only warns, through the drift check. v2.0.0 is one: its baseline adds `let_underscore_must_use`, `unused_result_ok`, `map_err_ignore`, `unwrap_in_result`, `panic_in_result_fn`, `print_stdout`, `print_stderr` and `exit`.
 
-CI runs `tests/test-drift.sh` (the drift check's cases), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
+CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-warnings-deny.sh` (clippy on a copy of the fixture with an `unwrap` planted must fail with `CARGO_BUILD_WARNINGS=deny`, and pass without the plant), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.

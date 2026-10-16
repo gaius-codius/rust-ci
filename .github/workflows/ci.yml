@@ -34,6 +34,12 @@ jobs:
       - name: Test the Claude Code Stop hook
         run: ./tests/test-stop-hook.sh
 
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Test that CARGO_BUILD_WARNINGS=deny fails on a baseline lint
+        run: ./tests/test-warnings-deny.sh
+
       - name: Shellcheck
         run: shellcheck -S warning agent/*.sh tests/*.sh
 
