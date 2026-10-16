@@ -74,6 +74,10 @@ on:
         description: Run `cargo test --workspace --locked --doc` (nextest doesn't run doctests). Turn off while the workspace has no library crate.
         type: boolean
         default: true
+      clippy-all-features:
+        description: Run clippy with --all-features, so code behind features is linted too.
+        type: boolean
+        default: false
       doc-all-features:
         description: Build the docs with --all-features, so code behind features is checked too.
         type: boolean
@@ -147,7 +151,11 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked
+        env:
+          ALL_FEATURES: ${{ inputs.clippy-all-features && '--all-features' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one flag
+          cargo clippy --workspace --all-targets ${ALL_FEATURES} --locked
 
       # Broken doc links and stray HTML in doc comments.
       - name: Docs

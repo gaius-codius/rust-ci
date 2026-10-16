@@ -19,7 +19,7 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 
 | Job | Steps |
 |---|---|
-| `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked`; `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
+| `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked` (with `--all-features` if `clippy-all-features` is set); `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
 | `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
@@ -43,6 +43,7 @@ Inputs:
 | `test-command` | `cargo nextest run --workspace --locked --profile ci --no-tests=fail` | The test run, written out in full so the project's own checks can read its arguments in `ci.yml`. Must start with `cargo nextest run`; the arguments are split on spaces. `--no-tests=fail` fails a run that finds no tests; a workspace with none yet passes the command with `--no-tests=pass`. Changed in v2.0.0 (v1 defaulted to `--no-tests=pass`) |
 | `post-test-script` | `""` | A script run after the tests, for checks that reuse the test build |
 | `doctest` | `true` | Run doctests. Turn off while the workspace has no library crate (`cargo test --doc` fails without one) |
+| `clippy-all-features` | `false` | Run clippy with `--all-features`, so code behind features is linted too |
 | `doc-all-features` | `false` | Build the docs with `--all-features` |
 | `deny-arguments` | `--all-features --locked` | Arguments to `cargo deny check` |
 
