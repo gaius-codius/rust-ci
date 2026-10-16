@@ -30,7 +30,7 @@ Five jobs, and a sixth when the `mutants` input is on, on the runner the caller 
 
 The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint and gitleaks are downloaded directly and checked against pinned digests).
 
-Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint`, `test` and `mutants` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
+Every job but `mutants` sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. (A mutant often leaves a warning, such as an unused argument; denied, it would fail to build and go untested.) The `lint`, `test` and `mutants` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
 
 Inputs:
 

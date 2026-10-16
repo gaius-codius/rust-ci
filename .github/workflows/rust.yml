@@ -296,6 +296,11 @@ jobs:
     if: inputs.mutants && github.event_name == 'pull_request'
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      # Most mutants leave a warning (an unused argument); denied, each would
+      # fail to build and count as unviable, not tested. The lint job checks
+      # warnings.
+      CARGO_BUILD_WARNINGS: warn
     steps:
       # The whole history, so the diff against the base commit can be taken.
       - name: Checkout
