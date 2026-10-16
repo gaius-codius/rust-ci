@@ -63,6 +63,9 @@ jobs:
       pre-test-action: true
       test-command: cargo nextest run --workspace --all-targets --locked --profile ci --no-tests=fail
       post-test-script: tests/fixture-post-test.sh
+      # On pull requests only; the fixture's unit test catches every mutant.
+      mutants: true
+      mutants-arguments: --test-tool nextest
 
   actions:
     # This commit's drift action against the fixture, which must show no drift

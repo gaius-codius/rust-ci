@@ -6,8 +6,9 @@ name: rust
 #       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v1.x.y
 #       with:
 #         setup-scripts: scripts/install-linux-build-deps.sh
-# The checks report as "rust / lint", "rust / test", "rust / deps" and
-# "rust / workflows" (the caller's job id, then the job's name).
+# The checks report as "rust / lint", "rust / test", "rust / deps",
+# "rust / workflows" and, with the mutants input on, "rust / mutants" (the
+# caller's job id, then the job's name).
 # The toolchain comes from the project's rust-toolchain.toml.
 
 on:
@@ -86,6 +87,20 @@ on:
         description: Arguments to `cargo deny check`.
         type: string
         default: --all-features --locked
+      mutants:
+        description: >-
+          Add the mutants job: on pull requests, cargo-mutants tests the code the pull
+          request changes and fails on a mutant the tests don't catch. On other events
+          the job is skipped.
+        type: boolean
+        default: false
+      mutants-arguments:
+        description: >-
+          Extra arguments to `cargo mutants`, split on spaces, for example
+          "--test-tool nextest" (cargo-nextest is installed) or "--timeout 120". The job
+          already passes --in-diff, --in-place and --output.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -259,6 +274,98 @@ jobs:
       - name: Doctests
         if: inputs.doctest
         run: cargo test --workspace --locked --doc
+
+  # Mutation testing of the pull request's diff only: a full run takes too long
+  # for every pull request, and a project can schedule one in its own workflow.
+  # Skipped on other events; a skipped job counts as passed for a required check.
+  mutants:
+    name: mutants
+    if: inputs.mutants && github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      # The whole history, so the diff against the base commit can be taken.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
+      - name: Cache the build
+        if: inputs.target-dir == ''
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      # The mutants run the tests, so they get the same setup as the test job.
+      - name: Run the project's pre-test action
+        if: inputs.pre-test-action
+        uses: ./.github/actions/pre-test # zizmor: ignore[self-repository]
+
+      - name: Run the pre-test script
+        if: inputs.pre-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.pre-test-script }}
+        run: '"./${SCRIPT}"'
+
+      # cargo-nextest for a project that passes --test-tool nextest.
+      - name: Install cargo-mutants and cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest
+
+      # The diff prefixes are spelled out because a runner's git config can
+      # change them, and cargo-mutants reads the paths after them. --in-place
+      # mutates the checkout, which the job throws away, so the build uses the
+      # cached or kept target directory. An empty diff, or one without Rust
+      # files, passes; a surviving mutant fails the step (exit 2), and so does a
+      # mutant that times out (exit 3).
+      - name: Mutation-test the pull request's diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MUTANTS_ARGUMENTS: ${{ inputs.mutants-arguments }}
+        run: |
+          out="${RUNNER_TEMP}/mutants"
+          mkdir -p "${out}"
+          git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
+            "${BASE_SHA}...HEAD" >"${out}/pr.diff"
+          read -r -a args <<<"${MUTANTS_ARGUMENTS}"
+          echo "cargo mutants --in-diff pr.diff --in-place ${args[*]}"
+          cargo mutants --in-diff "${out}/pr.diff" --in-place \
+            --output "${out}" "${args[@]}"
 
   deps:
     name: deps

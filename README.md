@@ -21,13 +21,14 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 |---|---|
 | `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked` (with `--all-features` if `clippy-all-features` is set); `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
+| `mutants` | Only with the `mutants` input on, and only on pull requests (skipped on other events; a skipped job counts as passed for a required check). The toolchain; the setup scripts; the pre-test action and script; cargo-mutants 27.1.0 on the pull request's diff against its base commit (`cargo mutants --in-diff`), in place, with the `mutants-arguments`. A mutant the tests don't catch, or one that times out, fails the job; a diff without Rust code passes |
 | `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
 | `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
 
 The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint is downloaded directly).
 
-Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint` and `test` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
+Every job sets `CARGO_BUILD_WARNINGS=deny`, so warnings fail clippy, the docs and the tests. The `lint`, `test` and `mutants` jobs cache the build with Swatinem/rust-cache, or, with `target-dir` set, keep it on the runner.
 
 Inputs:
 
@@ -35,7 +36,7 @@ Inputs:
 |---|---|---|
 | `runs-on` | `'["ubuntu-latest"]'` | Runner labels as a JSON list |
 | `timeout-minutes` | `60` | Timeout of each job (GitHub's default is 6 hours) |
-| `setup-scripts` | `""` | Scripts the `lint` and `test` jobs run before building, one per line, each a path with optional arguments: native build dependencies, pinned libraries |
+| `setup-scripts` | `""` | Scripts the `lint`, `test` and `mutants` jobs run before building, one per line, each a path with optional arguments: native build dependencies, pinned libraries |
 | `cache-key-files` | `""` | A glob of files hashed into the build cache's key, for example a script that pins a native library |
 | `target-dir` | `""` | Persistent self-hosted runners: an absolute directory that keeps each job's build between runs (`<target-dir>/<owner>/<repo>/<job>`) in place of the GitHub cache, which is slower there than an incremental build. Prune it on the runner |
 | `pre-test-action` | `false` | Run the project's composite action at `.github/actions/pre-test` before the tests. For setup that needs other actions (a cache) or sets variables for the tests (written to `$GITHUB_ENV`) |
@@ -46,6 +47,8 @@ Inputs:
 | `clippy-all-features` | `false` | Run clippy with `--all-features`, so code behind features is linted too |
 | `doc-all-features` | `false` | Build the docs with `--all-features` |
 | `deny-arguments` | `--all-features --locked` | Arguments to `cargo deny check` |
+| `mutants` | `false` | Add the `mutants` job (pull requests only) |
+| `mutants-arguments` | `""` | Extra arguments to `cargo mutants`, split on spaces, for example `--test-tool nextest` (cargo-nextest is installed) or `--timeout 120`. The job already passes `--in-diff`, `--in-place` and `--output` |
 
 The drift check compares the project's copies with this release's `baseline/`:
 
@@ -85,7 +88,7 @@ Run these from the project's root.
 
    Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own drift action with GitHub's self-repository syntax (`uses: $/...`), so the action and baseline always come from the commit you pinned.
 
-   Project-only jobs (fuzzing, mutation testing, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
+   Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
    The checks are then named `rust / lint`, `rust / test`, `rust / deps` and `rust / workflows`. Update the branch ruleset's required checks once the new names have run green once, or nothing can merge: either the old names never report, or the new ones are not yet known.
 
