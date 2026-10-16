@@ -111,6 +111,16 @@ run_case "unparsable file is an error" 1 "::error title=rust-ci baseline drift::
 # Lints in Cargo.toml.
 run_case "extra lint is not drift" 0 "no drift" "::" \
   <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = \"warn\"/' Cargo.toml"
+run_case "extra allowed lint is an error" 1 'clippy.indexing_slicing is "allow", which turns lints off' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = \"allow\"/' Cargo.toml"
+run_case "extra allowed group at a high priority is an error" 1 'clippy.restriction is {"level": "allow", "priority": 1}, which turns lints off' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nrestriction = { level = \"allow\", priority = 1 }/' Cargo.toml"
+run_case "allowed warnings are an error" 1 'rust.warnings is {"level": "allow", "priority": 10}; `warnings` may only be deny or forbid' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.rust\]$/[workspace.lints.rust]\nwarnings = { level = \"allow\", priority = 10 }/' Cargo.toml"
+run_case "denied warnings are not drift" 0 "no drift" "::" \
+  <<<"sed -i 's/^\[workspace.lints.rust\]$/[workspace.lints.rust]\nwarnings = \"deny\"/' Cargo.toml"
+run_case "extra lint without a level is an error" 1 'clippy.indexing_slicing is {"priority": 1}, which is not a lint level' "no drift" \
+  <<<"sed -i 's/^\[workspace.lints.clippy\]$/[workspace.lints.clippy]\nindexing_slicing = { priority = 1 }/' Cargo.toml"
 run_case "weaker lint level is an error" 1 'rust.unsafe_code is "allow", weaker than the baseline'"'"'s "forbid"' "no drift" \
   <<<"sed -i 's/unsafe_code = \"forbid\"/unsafe_code = \"allow\"/' Cargo.toml"
 run_case "stricter lint level is not drift" 0 "no drift" "::" \

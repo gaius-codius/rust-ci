@@ -29,7 +29,9 @@ Three kinds of comparison:
   project may add its own settings and list items (.config/nextest.toml,
   clippy.toml, deny.toml, typos.toml);
 - lints: the [workspace.lints] tables in Cargo.toml, each lint at the
-  baseline's level or a stricter one. A project may add lints.
+  baseline's level or a stricter one. A project may add lints at `warn` or
+  stricter; an extra `allow` (of a lint or a group, at any priority) and a
+  `warnings` entry other than deny or forbid are errors.
 
 Weaker, where values can be ordered:
 
@@ -185,6 +187,33 @@ def compare(want, have, base, kind, baseline_file):
     if kind == "exact":
         for path in have.keys() - want.keys():
             problems.append((ERROR, f"{path} is not in the baseline"))
+    if kind == "lints":
+        problems += extra_lints({path: have[path] for path in have.keys() - want.keys()})
+    return problems
+
+
+def extra_lints(extra):
+    """The project's own lints may be stricter, never `allow`.
+
+    An extra `allow`, of one lint or a group, turns off lints the baseline
+    turns on, at any priority. `warn` and stricter are fine: CI denies
+    warnings. `warnings` itself must be deny or forbid.
+    """
+    problems = []
+    for path, value in sorted(extra.items()):
+        level, _ = lint_level(value)
+        if level not in LEVELS:
+            problems.append((ERROR, f"{path} is {show(value)}, which is not a lint level"))
+        elif path.endswith(".warnings") and level not in ("deny", "forbid"):
+            problems.append((ERROR, f"{path} is {show(value)}; `warnings` may only be deny or forbid"))
+        elif level == "allow":
+            problems.append(
+                (
+                    ERROR,
+                    f"{path} is {show(value)}, which turns lints off; remove it, and put "
+                    '#[expect(..., reason = "...")] where the lint fires instead',
+                )
+            )
     return problems
 
 
