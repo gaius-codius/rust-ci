@@ -20,6 +20,17 @@ Errors (they fail the job):
   "allow"`, a rustc or rustdoc of its own or a rustc wrapper other than
   sccache, an [alias] for a command CI runs, or an [env] variable that CI's
   tools read. A test `runner` is a warning;
+- a switch that takes tests or checks out of the run: `[lib] test = false` in
+  a member, `overflow-checks` or `debug-assertions` off in the dev or test
+  profile (in Cargo.toml or .cargo/config.toml), nextest retries above the
+  baseline's in the ci profile or a profile it inherits (in another profile,
+  more retries than at the base commit), and, new since the base commit,
+  `autotests = false` or a nextest `default-filter`. Without a base commit
+  those two are warnings, as are `[lib] doctest = false` and a [[test]] with
+  `test = false` or `harness = false`;
+- an entry in `workspace.exclude` or deny.toml's `advisories.ignore`,
+  `bans.skip` or `bans.skip-tree` that the base commit didn't have. Entries
+  the base had, and every entry when there is no base, pass;
 - a file that can't be read or parsed, or a check that could not run.
 
 Warnings: a baseline setting, list item or file the project doesn't have and
@@ -366,6 +377,198 @@ def check_members(manifest, members):
     return problems
 
 
+def load(path):
+    """The project's file, parsed, or None if it's absent or unparsable (reported elsewhere)."""
+    try:
+        return tomllib.loads(Path(path).read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def at_base(ref, path):
+    """The file at the base commit, parsed, or {} if the base hasn't got it."""
+    text = read_at(ref, path)
+    return tomllib.loads(text) if text is not None else {}
+
+
+BASE_ERRORS = (OSError, subprocess.CalledProcessError, tomllib.TOMLDecodeError)
+
+
+def check_test_switches(members, ref):
+    """Settings in a member's Cargo.toml that take tests out of the test run."""
+    problems = []
+    for _, name, member in members:
+        lib = member.get("lib", {})
+        if isinstance(lib, dict) and lib.get("test") is False:
+            problems.append(
+                (ERROR, f"{name}: [lib] test = false leaves the library's unit tests out of the test run; remove it.")
+            )
+        if isinstance(lib, dict) and lib.get("doctest") is False:
+            problems.append(
+                (WARNING, f"{name}: [lib] doctest = false skips the library's doctests; remove it unless it has none.")
+            )
+        if table(member, "package").get("autotests") is False:
+            skips = "[package] autotests = false leaves files in tests/ without a [[test]] entry out of the test run"
+            try:
+                base = at_base(ref, name.as_posix()) if ref else {}
+            except BASE_ERRORS as err:
+                problems.append((ERROR, f"could not read the base commit's {name}, so its autotests were not compared: {err}"))
+                continue
+            if ref and table(base, "package").get("autotests") is not False:
+                problems.append(
+                    (ERROR, f"{name}: {skips}, and is new since the base commit; it needs the code owner's approval: explain it in the pull request.")
+                )
+            else:
+                problems.append((WARNING, f"{name}: {skips}; check that each has an entry."))
+        tests = member.get("test", [])
+        for test in tests if isinstance(tests, list) else []:
+            if not isinstance(test, dict):
+                continue
+            target = f"[[test]] {show(test.get('name'))}"
+            if test.get("test") is False:
+                problems.append((WARNING, f"{name}: {target} has test = false, so the test run skips it."))
+            if test.get("harness") is False:
+                problems.append(
+                    (WARNING, f"{name}: {target} has harness = false; check that its main fails when a test fails.")
+                )
+    return problems
+
+
+def check_profiles(config, where):
+    """The dev and test profiles, which tests build with, must keep their runtime checks."""
+    problems = []
+    for profile in ("dev", "test"):
+        settings = table(config, f"profile.{profile}")
+        if not isinstance(settings, dict):
+            continue
+        scopes = [(f"profile.{profile}", settings), (f"profile.{profile}.build-override", settings.get("build-override"))]
+        packages = settings.get("package", {})
+        if isinstance(packages, dict):
+            scopes += [(f"profile.{profile}.package.{show(crate)}", value) for crate, value in packages.items()]
+        for scope, values in scopes:
+            if not isinstance(values, dict):
+                continue
+            for key in ("overflow-checks", "debug-assertions"):
+                if values.get(key) is False:
+                    problems.append(
+                        (ERROR, f"{where}: {scope}.{key} is false, which turns off checks the tests rely on; remove it.")
+                    )
+    return problems
+
+
+def retries(value):
+    """A nextest retries setting's count: a number or a table with `count`."""
+    if isinstance(value, dict):
+        value = value.get("count", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def profile_retries(config, name):
+    """The most retries a nextest profile sets, itself or in an override."""
+    profile = table(config, f"profile.{name}")
+    counts = [retries(profile.get("retries"))] if isinstance(profile, dict) else [0]
+    overrides = profile.get("overrides", []) if isinstance(profile, dict) else []
+    counts += [retries(o.get("retries")) for o in overrides if isinstance(o, dict)] if isinstance(overrides, list) else []
+    return max(counts)
+
+
+def inherited_profiles(config, name):
+    """A nextest profile and the profiles it inherits from, ending with default."""
+    names = []
+    while isinstance(name, str) and name not in names:
+        names.append(name)
+        profile = table(config, f"profile.{name}")
+        name = profile.get("inherits") if isinstance(profile, dict) and name != "default" else None
+    return names if "default" in names else [*names, "default"]
+
+
+def check_nextest(ref):
+    """nextest must not retry tests in CI's profiles, or filter tests out unseen.
+
+    Retries make a flaky test pass. The ci profile and every profile it
+    inherits from may retry no more than the baseline's; another profile may
+    keep the retries it had at the base commit. A default-filter leaves tests
+    out of every run.
+    """
+    name = ".config/nextest.toml"
+    have = load(name)
+    if have is None:
+        return []
+    try:
+        want = tomllib.loads((BASELINE / name).read_text())
+        base = at_base(ref, name) if ref else {}
+    except BASE_ERRORS as err:
+        return [(ERROR, f"could not read the baseline or base commit's {name}, so its retries were not checked: {err}")]
+    profiles = table(have, "profile")
+    profiles = list(profiles) if isinstance(profiles, dict) else []
+    ci = inherited_profiles(have, "ci")
+    problems = []
+    for profile in sorted({*profiles, "default"}):
+        count, limit = profile_retries(have, profile), profile_retries(want, profile)
+        had = profile_retries(base, profile)
+        if count > limit and (profile in ci or (ref and count > had)):
+            why = "the ci profile uses it" if profile in ci else "it has more than at the base commit"
+            problems.append(
+                (ERROR, f"{name}: profile.{profile} retries tests {count} times (baseline: {limit}), and {why}; a retried test that passes counts as passed, so flaky tests go unseen. Remove the retries.")
+            )
+        settings = table(have, f"profile.{profile}")
+        if isinstance(settings, dict) and "default-filter" in settings:
+            value = settings["default-filter"]
+            skips = f"profile.{profile}.default-filter is {show(value)}, which leaves the tests it doesn't match out of every run"
+            if ref and table(base, f"profile.{profile}").get("default-filter") != value:
+                problems.append(
+                    (ERROR, f"{name}: {skips}; a new or changed filter needs the code owner's approval: explain it in the pull request.")
+                )
+            else:
+                problems.append((WARNING, f"{name}: {skips}."))
+    return problems
+
+
+# Lists whose entries turn a check off for some crates or advisories: (file,
+# setting, what an entry is).
+EXCEPTION_LISTS = [
+    ("Cargo.toml", "workspace.exclude", "workspace exclude"),
+    ("deny.toml", "advisories.ignore", "advisory ignore"),
+    ("deny.toml", "bans.skip", "duplicate-version skip"),
+    ("deny.toml", "bans.skip-tree", "duplicate-version skip"),
+]
+
+
+def entry_key(entry):
+    """An exception list entry, less its reason, which may be reworded."""
+    if isinstance(entry, dict):
+        entry = {key: value for key, value in entry.items() if key != "reason"}
+    return show(entry)
+
+
+def check_new_exceptions(ref):
+    """An exception the base commit didn't have is an error; ones it had are the base's call.
+
+    Without a base commit (a push), nothing is new.
+    """
+    if not ref:
+        return []
+    problems = []
+    for name, setting, what in EXCEPTION_LISTS:
+        have = load(name)
+        if have is None:
+            continue
+        try:
+            base = at_base(ref, name)
+        except BASE_ERRORS as err:
+            problems.append((ERROR, f"could not read the base commit's {name}, so new {what}s were not checked: {err}"))
+            continue
+        entries, had = table(have, setting), table(base, setting)
+        if not isinstance(entries, list):
+            continue
+        had = {entry_key(entry) for entry in had} if isinstance(had, list) else set()
+        if new := [entry_key(entry) for entry in entries if entry_key(entry) not in had]:
+            problems.append(
+                (ERROR, f"{name}: {setting} has {', '.join(new)}, new since the base commit; a new {what} needs the code owner's approval: explain it in the pull request.")
+            )
+    return problems
+
+
 # Each tool's config file names, the one it reads first leading: a .clippy.toml
 # or .rustfmt.toml wins over the plain name in the same directory.
 TOOL_CONFIGS = {"clippy.toml": (".clippy.toml", "clippy.toml"), "rustfmt.toml": (".rustfmt.toml", "rustfmt.toml")}
@@ -479,6 +682,7 @@ def check_cargo_config():
                 problems.append(
                     (WARNING, f"{name}: {section}.runner runs the tests through {runner}; check it passes on their result.")
                 )
+        problems += check_profiles(config, name)
         build = config.get("build", {})
         if isinstance(build, dict):
             if build.get("warnings") == "allow":
@@ -527,6 +731,11 @@ def main():
     problems += check_members(manifest, members)
     problems += check_tool_configs(members)
     problems += check_cargo_config()
+    problems += check_test_switches(members, ref)
+    if isinstance(manifest, dict):
+        problems += check_profiles(manifest, "Cargo.toml")
+    problems += check_nextest(ref)
+    problems += check_new_exceptions(ref)
     for level, message in sorted(problems, key=lambda p: (p[0] != ERROR, p[1])):
         print(f"::{level} title=rust-ci baseline drift::{message}")
     if not problems:

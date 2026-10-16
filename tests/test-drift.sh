@@ -148,6 +148,50 @@ run_case "clippy.toml above a member is an error" 1 "crates/clippy.toml replaces
 run_case "config files outside the members are not drift" 0 "no drift" "::" \
   <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p docs crates/a/target crates/a/vendored && touch docs/clippy.toml crates/a/target/rustfmt.toml crates/a/vendored/.git crates/a/vendored/rustfmt.toml"
 
+# Switches that take tests or checks out of the run.
+run_case "lib test = false is an error" 1 "crates/a/Cargo.toml: [lib] test = false leaves the library's unit tests out" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n[lib]\ntest = false\n'"
+run_case "lib doctest = false is a warning" 0 "::warning title=rust-ci baseline drift::crates/a/Cargo.toml: [lib] doctest = false" "::error" \
+  <<<"add_member a '[lints]\nworkspace = true\n[lib]\ndoctest = false\n'"
+run_case "autotests = false without a base is a warning" 0 "::warning title=rust-ci baseline drift::crates/a/Cargo.toml: [package] autotests = false" "::error" \
+  <<<"add_member a 'autotests = false\n[lints]\nworkspace = true\n'"
+BASE_REF=HEAD run_case "autotests = false added since the base is an error" 1 "autotests = false leaves files in tests/ without a [[test]] entry out of the test run, and is new since the base commit" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && commit_base && sed -i '2a autotests = false' crates/a/Cargo.toml"
+BASE_REF=HEAD run_case "autotests = false at the base too is a warning" 0 "[package] autotests = false" "::error" \
+  <<<"add_member a 'autotests = false\n[lints]\nworkspace = true\n' && commit_base"
+run_case "test target switches are warnings" 0 '[[test]] "it" has harness = false' "::error" \
+  <<<"add_member a '[lints]\nworkspace = true\n[[test]]\nname = \"it\"\nharness = false\n[[test]]\nname = \"off\"\ntest = false\n'"
+run_case "test profile without overflow checks is an error" 1 "Cargo.toml: profile.test.overflow-checks is false" "no drift" \
+  <<<"printf '\n[profile.test]\noverflow-checks = false\n' >>Cargo.toml"
+run_case "dev package profile without debug assertions is an error" 1 'Cargo.toml: profile.dev.package."a".debug-assertions is false' "no drift" \
+  <<<"printf '\n[profile.dev.package.a]\ndebug-assertions = false\n' >>Cargo.toml"
+run_case "cargo config profile is checked" 1 ".cargo/config.toml: profile.dev.overflow-checks is false" "no drift" \
+  <<<"mkdir .cargo && printf '[profile.dev]\noverflow-checks = false\n' >.cargo/config.toml"
+run_case "release profile is not drift" 0 "no drift" "::" \
+  <<<"printf '\n[profile.release]\noverflow-checks = false\ndebug-assertions = false\n' >>Cargo.toml"
+run_case "retries in the ci profile are an error" 1 ".config/nextest.toml: profile.ci retries tests 2 times (baseline: 0)" "no drift" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\nretries = 2/' .config/nextest.toml"
+run_case "retries in a default override are an error" 1 "profile.default retries tests 3 times" "no drift" \
+  <<<"printf '\n[[profile.default.overrides]]\nfilter = \"test(x)\"\nretries = { backoff = \"fixed\", count = 3 }\n' >>.config/nextest.toml"
+run_case "retries in a profile ci inherits are an error" 1 "profile.flaky retries tests 2 times (baseline: 0), and the ci profile uses it" "no drift" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\ninherits = \"flaky\"/' .config/nextest.toml && printf '\n[profile.flaky]\nretries = 2\n' >>.config/nextest.toml"
+BASE_REF=HEAD run_case "retries added to another profile since the base are an error" 1 "profile.slow retries tests 2 times (baseline: 0), and it has more than at the base commit" "no drift" \
+  <<<"commit_base && printf '\n[profile.slow]\nretries = 2\n' >>.config/nextest.toml"
+BASE_REF=HEAD run_case "retries another profile had at the base are not drift" 0 "no drift" "::" \
+  <<<"printf '\n[profile.slow]\nretries = 2\n' >>.config/nextest.toml && commit_base"
+run_case "default-filter without a base is a warning" 0 '::warning title=rust-ci baseline drift::.config/nextest.toml: profile.ci.default-filter is "not test(slow)"' "::error" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml"
+BASE_REF=HEAD run_case "default-filter added since the base is an error" 1 "profile.ci.default-filter is \"not test(slow)\", which leaves the tests it doesn't match out of every run; a new or changed filter" "no drift" \
+  <<<"commit_base && sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml"
+BASE_REF=HEAD run_case "new advisory ignore is an error" 1 'deny.toml: advisories.ignore has {"id": "RUSTSEC-2024-0002"}, new since the base commit; a new advisory ignore needs' 'RUSTSEC-2024-0001' \
+  <<<"sed -i 's/^ignore = \[\]/ignore = [{ id = \"RUSTSEC-2024-0001\", reason = \"old\" }]/' deny.toml && commit_base && sed -i 's/\"old\" }\]/\"reworded\" }, { id = \"RUSTSEC-2024-0002\" }]/' deny.toml"
+BASE_REF=HEAD run_case "new bans skip is an error" 1 'deny.toml: bans.skip-tree has "windows-sys@0.48", new since the base commit' "no drift" \
+  <<<"commit_base && sed -i 's/^allow-wildcard-paths = true$/&\nskip-tree = [\"windows-sys@0.48\"]/' deny.toml"
+BASE_REF=HEAD run_case "new workspace exclude is an error" 1 'Cargo.toml: workspace.exclude has "crates/a", new since the base commit; a new workspace exclude needs' "no drift" \
+  <<<"commit_base && add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
+run_case "advisory ignore without a base is not drift" 0 "no drift" "::" \
+  <<<"sed -i 's/^ignore = \[\]/ignore = [\"RUSTSEC-2024-0001\"]/' deny.toml"
+
 # .cargo/config.toml.
 run_case "capped lints in rustflags are an error" 1 '.cargo/config.toml: build.rustflags has "--cap-lints allow", which turns lints off' "no drift" \
   <<<"mkdir .cargo && printf '[build]\nrustflags = [\"--cap-lints\", \"allow\"]\n' >.cargo/config.toml"
