@@ -240,8 +240,12 @@ def check(project_file, baseline_file, kind, inner, ref):
     return [(level, f"{where}: {message}.") for level, message in problems]
 
 
-def dependency_paths(manifest, directory):
-    """The directories of a manifest's path dependencies, in every dependency table."""
+def dependency_paths(manifest, directory, inherited):
+    """The directories of a manifest's path dependencies, in every dependency table.
+
+    inherited maps each [workspace.dependencies] entry with a path to its
+    directory, for a dependency that takes it with `workspace = true`.
+    """
     tables = [manifest.get(name, {}) for name in ("dependencies", "dev-dependencies", "build-dependencies")]
     for target in manifest.get("target", {}).values():
         if isinstance(target, dict):
@@ -249,32 +253,42 @@ def dependency_paths(manifest, directory):
     for deps in tables:
         if not isinstance(deps, dict):
             continue
-        for dep in deps.values():
-            if isinstance(dep, dict) and isinstance(dep.get("path"), str):
+        for name, dep in deps.items():
+            if not isinstance(dep, dict):
+                continue
+            if isinstance(dep.get("path"), str):
                 yield (directory / dep["path"]).resolve()
+            elif dep.get("workspace") is True and name in inherited:
+                yield inherited[name]
 
 
-def check_members():
-    """Every workspace member must take the workspace's lints.
+def workspace_members():
+    """The root manifest, its workspace members and any problems reading them.
 
-    Members are the root package, if any, the `members` globs, and path
-    dependencies inside the workspace (cargo makes those members too), less
-    `exclude`.
+    Members are (directory, Cargo.toml relative to the root, manifest): the
+    root package, if any, the `members` globs, and the path dependencies of
+    members that are inside the workspace (cargo makes those members too), less
+    `exclude`. A [workspace.dependencies] path is a member only once a member
+    uses it. Without a [workspace], the root package is the only member.
     """
     try:
         manifest = tomllib.loads(Path("Cargo.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError):
-        return []  # reported by the lints comparison
+        return None, [], []  # reported by the lints comparison
+    root = Path.cwd().resolve()
     workspace = manifest.get("workspace")
     if not isinstance(workspace, dict):
-        return []
-    root = Path.cwd().resolve()
+        return manifest, ([(root, Path("Cargo.toml"), manifest)] if "package" in manifest else []), []
     excluded = [(root / path).resolve() for path in workspace.get("exclude", [])]
+    inherited = {
+        name: (root / dep["path"]).resolve()
+        for name, dep in workspace.get("dependencies", {}).items()
+        if isinstance(dep, dict) and isinstance(dep.get("path"), str)
+    }
     queue = [root] if "package" in manifest else []
     for pattern in workspace.get("members", []):
-        queue += [(root / match).resolve() for match in glob.glob(pattern, include_hidden=True)]
-    queue += dependency_paths({"dependencies": workspace.get("dependencies", {})}, root)
-    problems, seen = [], set()
+        queue += [(root / match).resolve() for match in glob.glob(pattern, recursive=True, include_hidden=True)]
+    members, problems, seen = [], [], set()
     while queue:
         directory = queue.pop()
         if (
@@ -286,12 +300,25 @@ def check_members():
             continue
         seen.add(directory)
         name = (directory / "Cargo.toml").relative_to(root)
-        try:
-            member = tomllib.loads((directory / "Cargo.toml").read_text())
-        except (OSError, tomllib.TOMLDecodeError) as err:
-            problems.append((ERROR, f"could not read {name}, so its lints were not checked: {err}"))
-            continue
-        queue += dependency_paths(member, directory)
+        if directory == root:
+            member = manifest
+        else:
+            try:
+                member = tomllib.loads((directory / "Cargo.toml").read_text())
+            except (OSError, tomllib.TOMLDecodeError) as err:
+                problems.append((ERROR, f"could not read {name}, so it was not checked: {err}"))
+                continue
+        queue += dependency_paths(member, directory, inherited)
+        members.append((directory, name, member))
+    return manifest, members, problems
+
+
+def check_members(manifest, members):
+    """Every workspace member must take the workspace's lints."""
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("workspace"), dict):
+        return []
+    problems = []
+    for _, name, member in members:
         lints = member.get("lints")
         if lints is None:
             problems.append((ERROR, f"{name} has no [lints]; add `[lints] workspace = true`."))
@@ -315,7 +342,9 @@ def main():
             ref = None
     for entry in FILES:
         problems += check(*entry, ref)
-    problems += check_members()
+    manifest, members, problems_reading = workspace_members()
+    problems += problems_reading
+    problems += check_members(manifest, members)
     for level, message in sorted(problems, key=lambda p: (p[0] != ERROR, p[1])):
         print(f"::{level} title=rust-ci baseline drift::{message}")
     if not problems:

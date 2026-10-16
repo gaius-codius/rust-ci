@@ -151,6 +151,12 @@ run_case "excluded member is not checked" 0 "no drift" "::" \
   <<<"add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
 run_case "path dependency inside the workspace is a member" 1 "other/b/Cargo.toml has no [lints]" "no drift" \
   <<<"add_member a '[lints]\nworkspace = true\n[dependencies]\nb = { path = \"../../other/b\" }\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml"
+run_case "member under a ** glob is checked" 1 "crates/x/y/deep/Cargo.toml has no [lints]" "no drift" \
+  <<<"sed -i 's|^members = .*|members = [\"crates/**/deep\"]|' Cargo.toml && mkdir -p crates/x/y/deep && printf '[package]\nname = \"deep\"\n' >crates/x/y/deep/Cargo.toml"
+run_case "unused workspace path dependency is not a member" 0 "no drift" "::" \
+  <<<"add_member a '[lints]\nworkspace = true\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml && printf '\n[workspace.dependencies]\nb = { path = \"other/b\" }\n' >>Cargo.toml"
+run_case "inherited workspace path dependency is a member" 1 "other/b/Cargo.toml has no [lints]" "no drift" \
+  <<<"add_member a '[lints]\nworkspace = true\n[dependencies]\nb.workspace = true\n' && mkdir -p other/b && printf '[package]\nname = \"b\"\n' >other/b/Cargo.toml && printf '\n[workspace.dependencies]\nb = { path = \"other/b\" }\n' >>Cargo.toml"
 run_case "root package without [lints] is an error" 1 "Cargo.toml has no [lints]" "no drift" \
   <<<"sed -i '1i [package]\nname = \"root\"\n' Cargo.toml"
 
