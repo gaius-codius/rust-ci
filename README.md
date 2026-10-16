@@ -56,15 +56,19 @@ Inputs:
 The drift check compares the project's copies with this release's `baseline/`:
 
 - `rustfmt.toml` and `rust-toolchain.toml` must hold exactly the baseline's settings.
-- `.config/nextest.toml`, `clippy.toml`, `deny.toml`, `typos.toml` and the `[workspace.lints]` tables in `Cargo.toml` must hold every baseline setting with the baseline's value or a stricter one; a list must hold at least the baseline's items. A project's own additions are not drift.
-- Every workspace member's `Cargo.toml` (the root package, the `members` globs and path dependencies inside the workspace, less `exclude`) must have `[lints] workspace = true` and nothing else in `[lints]`.
+- `.config/nextest.toml`, `clippy.toml`, `deny.toml`, `typos.toml` and the `[workspace.lints]` tables in `Cargo.toml` must hold every baseline setting with the baseline's value or a stricter one; a list must hold at least the baseline's items. A project's own additions are not drift, except a lint of its own at `allow` (a lint or a group, at any priority) or a `warnings` entry other than `deny` or `forbid`, which turn baseline lints off.
+- Every workspace member's `Cargo.toml` (the root package, the `members` globs and the path dependencies of members inside the workspace, less `exclude`) must have `[lints] workspace = true` and nothing else in `[lints]`. A `[workspace.dependencies]` path counts once a member uses it.
+- clippy and rustfmt must read the root's `clippy.toml` and `rustfmt.toml`: a `.clippy.toml` or `.rustfmt.toml` at the root (read first), or any of the four names in or above a member's directory, is an error.
+- The root `.cargo/config.toml` (or `.cargo/config`) must not loosen what CI runs: no rustflags or rustdocflags that allow or cap lints (`-A`, `--allow`, `--cap-lints`), no `build.warnings = "allow"`, no `build.rustc`, `rustdoc` or rustc wrapper other than sccache, no `[alias]` for a command CI runs (`clippy`, `check`, `build`, `test`, `nextest`, `deny`, `shear`, `mutants`, `fmt`, `doc`, `run`), and no `[env]` entry for a variable CI's tools read (`RUSTFLAGS` and the like, `CARGO_BUILD_WARNINGS`, `CLIPPY_ARGS`, `CLIPPY_CONF_DIR`, `NEXTEST_*`). A test `runner` is a warning.
+- Tests and checks stay in the run: `[lib] test = false` in a member, and `overflow-checks` or `debug-assertions` off in the dev or test profile (in `Cargo.toml` or `.cargo/config.toml`), are errors; so are nextest retries in the `ci` profile or one it inherits (another profile may keep the retries it had at the base). New since the base commit, `autotests = false` and a nextest `default-filter` are errors, and otherwise warnings, as are `[lib] doctest = false` and a `[[test]]` with `test = false` or `harness = false`.
+- On a pull request, an entry the base commit didn't have in `workspace.exclude` or in `deny.toml`'s `advisories.ignore`, `bans.skip` or `bans.skip-tree` is an error: explain it in the pull request for the code owner. Entries the base had pass, as does every entry on a push.
 - Comments and formatting are not compared.
 
 Each difference is an annotation on the `lint` job. These are errors, and fail the job:
 
 - A setting the project has with a weaker value. Stricter is fine where values have an order: lint levels (`allow` < `warn` < `deny` < `forbid`; a `{ level, priority }` table compares by level, and its priority must equal the baseline's), cargo-deny severities (`allow` < `warn` < `deny`), the scope of `advisories.unmaintained` and `unsound` (`all` covers `workspace` and `transitive`; `none` covers neither), a higher `licenses.confidence-threshold`, and `false` for clippy's `allow-*-in-tests`. Any other value that differs from the baseline's is an error, as is a setting in `rustfmt.toml` or `rust-toolchain.toml` that isn't in the baseline. A toolchain other than the baseline's is drift too: bump `rust-toolchain.toml` in the same change as the pin.
 - On a pull request, a baseline setting, list item or file the project had at the pull request's base commit and no longer has. The `lint` job fetches the full history on pull requests to read the base.
-- A workspace member that doesn't take the workspace lints, or a file that can't be parsed.
+- A workspace member that doesn't take the workspace lints, any of the errors listed above, or a file that can't be parsed.
 
 A baseline setting, list item or file the project doesn't have yet (and didn't have at the base) is a warning: that is how a new baseline item reaches projects that haven't copied it.
 
