@@ -36,7 +36,7 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 | Job | Now |
 |---|---|
 | files (`No recordings or large files`) | Project (`scripts/check-files.sh` differs per project) |
-| weakened (`Weakened checks are explained`) | Project until the weakened-checks detector replaces `scripts/check-weakened.sh` (R3); then the `rules` job (X2, coming) |
+| weakened (`Weakened checks are explained`) | Project: the gaius-codius/weakened-checks action (v1.0.0) in `rules.yml`, which replaced `scripts/check-weakened.sh` |
 | secrets (`No secrets (gitleaks)`) | Project on v1. From v2.0.0, shared: `rust / secrets` (gitleaks 8.30.1); the project job stays until the project moves to v2, then goes |
 
 ## conspector: `.github/workflows/ci.yml`
@@ -54,7 +54,7 @@ Every job and step in nota's and conspector's workflows and git hooks when they 
 | Job | Now |
 |---|---|
 | files (`No large files`), from the base's copy of the script | Project |
-| weakened (`Weakened checks are explained`), from the base's copy | Project until R3; then the `rules` job (X2, coming) |
+| weakened (`Weakened checks are explained`) | Project: the gaius-codius/weakened-checks action (v1.0.0) in `rules.yml`, which replaced the base's copy of the script |
 | script-tests (`Script tests`): `check-scripts.test.sh`, which includes the audit-parity tests | Project |
 | secrets (`No secrets (gitleaks)`, `--ignore-gitleaks-allow`) | Project on v1. From v2.0.0, shared: `rust / secrets` with `gitleaks-arguments: --ignore-gitleaks-allow`; the project job stays until the project moves to v2, then goes |
 

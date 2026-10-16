@@ -543,6 +543,5 @@ jobs:
             gitleaks dir "${args[@]}" .
           fi
 
-  # rules (X2, coming): the weakened-checks detector (gaius-codius/weakened-checks)
-  # becomes a job here once it replaces the projects' scripts/check-weakened.sh.
-  # Until then each project keeps its "Weakened checks are explained" job in rules.yml.
+  # Weakened checks aren't a job here: the gaius-codius/weakened-checks action
+  # runs in each project's rules.yml, which also triggers on a PR body edit.

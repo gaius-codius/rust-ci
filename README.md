@@ -26,7 +26,6 @@ Five jobs, and a sixth when the `mutants` input is on, on the runner the caller 
 | `deps` | On pull requests, the crates the pull request adds to `Cargo.lock` (annotations and a job summary; never fails); the toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
 | `secrets` | gitleaks 8.30.1 (release binary, checked against a pinned digest), secrets redacted in the log. On pull requests, every commit of the pull request (`gitleaks git --log-opts=<base>..HEAD`), so a secret added in one commit and deleted in a later one is still found: it stays in the history once merged. On other events, the files in the checkout (`gitleaks dir .`), which needs no history and doesn't fail again on a secret removed and rotated long ago. gitleaks reads the project's `.gitleaks.toml` and `.gitleaksignore` at the root by itself |
-| `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
 
 The workflow needs no Docker and no sudo, so it runs on a self-hosted Linux x64 runner that has only rustup (no toolchain installed), git, curl, bash and python3. The tools it needs are installed with taiki-e/install-action, which downloads pinned release binaries (actionlint and gitleaks are downloaded directly and checked against pinned digests).
 
@@ -102,6 +101,8 @@ Run these from the project's root.
    ```
 
    Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v2.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
+
+   Weakened checks stay in the project's own `rules.yml`: the [weakened-checks](https://github.com/gaius-codius/weakened-checks) action needs a `pull_request` workflow that also runs on `edited`, so that editing the PR body (its `Check changes:` line) runs it again, and the rest of this workflow shouldn't rerun for that.
 
    Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
