@@ -1,16 +1,34 @@
 #!/usr/bin/env bash
-# Tests agent/claude-rust-protect-config.sh with fake PreToolUse hook-input JSON and a
-# throwaway git repo with a Cargo workspace. Needs bash, git and jq.
+# Tests agent/claude-rust-protect-config.sh, which runs weakened-checks' hook and
+# rust-ci's own (agent/rust-protect-remainder.sh) and combines them, with fake
+# PreToolUse hook-input JSON and a throwaway git repo with a Cargo workspace. Needs
+# bash, git and jq, and weakened-checks: WEAKENED_CHECKS_DIR (a clone at the commit
+# below), else a clone from GitHub, so an offline run needs WEAKENED_CHECKS_DIR.
 set -uo pipefail
+
+# weakened-checks v1.1.0, the release the wrapper was written against.
+wc_commit=534b261dbad4e995e1575d7f8f2de0d6abfb0fb7
 
 src_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 hook="${src_root}/agent/claude-rust-protect-config.sh"
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
+if [[ -z ${WEAKENED_CHECKS_DIR:-} ]]; then
+  WEAKENED_CHECKS_DIR="${work}/weakened-checks"
+  git -c advice.detachedHead=false clone -q --depth 1 --branch v1.1.0 https://github.com/gaius-codius/weakened-checks "${WEAKENED_CHECKS_DIR}" ||
+    { echo "FAIL could not clone weakened-checks; set WEAKENED_CHECKS_DIR to a clone at ${wc_commit}"; exit 1; }
+fi
+got="$(git -C "${WEAKENED_CHECKS_DIR}" rev-parse HEAD 2>/dev/null)"
+[[ ${got} == "${wc_commit}" ]] || { echo "FAIL ${WEAKENED_CHECKS_DIR} is at ${got:-nothing}, want ${wc_commit}"; exit 1; }
+shared="${WEAKENED_CHECKS_DIR}/agent/claude-protect-config.sh"
+# The developer's own hooks and settings stay out of it.
+export HOME="${work}/home" WEAKENED_CHECKS_HOOK="${shared}"
+mkdir -p "${HOME}"
+unset WEAKENED_CHECKS_PROTECT_CONFIG
 # A PATH with the tools the hook uses but no jq, for the missing-tool case (jq often
 # shares /usr/bin with bash, so dropping its directory isn't enough).
 mkdir -p "${work}/nojq"
-for t in bash env git realpath dirname basename sed head grep cat; do
+for t in bash env git realpath readlink dirname basename sed head grep cat mktemp rm tr cut sort uniq timeout mkdir wc awk; do
   ln -s "$(command -v "${t}")" "${work}/nojq/${t}"
 done
 nojq="${work}/nojq"
@@ -49,6 +67,8 @@ run_json() {
     context) [[ "${out}" == *'"additionalContext"'* && "${out}" != *permissionDecision* ]] || ok=0 ;;
   esac
   [[ -z "${sub}" || "${out}" == *"${sub}"* ]] || ok=0
+  # Whatever it says is one JSON object.
+  [[ -z "${out}" ]] || jq -e -s 'length == 1 and (.[0].hookSpecificOutput | type) == "object"' <<<"${out}" >/dev/null 2>&1 || ok=0
   if ((ok)); then
     echo "ok   ${name}"
   else
@@ -127,7 +147,8 @@ edit "adding a [profile] setting asks" Cargo.toml 'serde = "1"' 'serde = "1"
 
 [profile.release]
 overflow-checks = false' ask "[profile]"
-write "Write of Cargo.toml with the lints spelled another way does not ask" Cargo.toml '[workspace]
+# weakened-checks' hook compares the lints lines, not the parsed tables.
+write "Write of Cargo.toml with the lints spelled another way asks (weakened-checks' hook)" Cargo.toml '[workspace]
 members = ["crates/*"]
 
 [workspace.dependencies]
@@ -135,7 +156,7 @@ serde = "1"
 
 [workspace.lints]
 clippy.unwrap_used = "deny"
-' silent
+' ask "weakened-checks hook"
 
 # Cargo.toml: dotted lints keys, where the table they sit under decides.
 mkdir -p "${r}/crates/dot"
@@ -215,7 +236,8 @@ edit "a lint added to an #[allow] list asks" crates/lib/src/s.rs '#[allow(dead_c
 edit "a lint added inside an attribute, without its #[, asks" crates/lib/src/s.rs 'dead_code)]
 fn a' 'dead_code, clippy::unwrap_used)]
 fn a' ask
-edit "respacing an #[allow] does not ask" crates/lib/src/s.rs '#[allow(dead_code)]' '#[allow( dead_code )]' silent
+# weakened-checks' hook compares the attribute as written, so respacing asks there.
+edit "respacing an #[allow] asks (weakened-checks' hook)" crates/lib/src/s.rs '#[allow(dead_code)]' '#[allow( dead_code )]' ask "weakened-checks hook"
 write "a Write moving the suppressions around does not ask" crates/lib/src/s.rs "fn z() {}
 ${s_rs}" silent
 run_json "a MultiEdit swapping one #[allow] for another asks" "$(jq -n --arg f "${r}/crates/lib/src/s.rs" \
@@ -306,6 +328,60 @@ bash_cmd "tee into lefthook-local.yml asks" "echo 'skip_output: true' | tee left
 bash_cmd "a redirect into .github/zizmor.yml asks" "printf 'rules: {}\\n' > .github/zizmor.yml" ask
 bash_cmd "reading build.rs does not ask" "cat build.rs" silent
 
+# The two halves combined.
+wrapper="${hook}"
+write "both halves asking give one ask with both reasons" deny.toml 'x' ask "rust protect hook: deny.toml controls"
+write "both reasons are in it" deny.toml 'x' ask "weakened-checks hook: deny.toml is check config"
+out="$(printf '%s' "$(jq -n --arg f "${r}/deny.toml" --arg c "${r}" '{cwd: $c, tool_name: "Write", tool_input: {file_path: $f, content: "x"}}')" | (cd "${r}" && "${hook}"))"
+reason="$(jq -r .hookSpecificOutput.permissionDecisionReason <<<"${out}")"
+if [[ ${reason} == *"WEAKENED_CHECKS_PROTECT_CONFIG=off turns off only its weakened-checks half)." && $(grep -o 'to turn this hook off' <<<"${reason}" | wc -l) -eq 1 ]]; then
+  echo "ok   the joined reason ends with one opt-out naming both halves"
+else
+  echo "FAIL the joined reason ends with one opt-out naming both halves: ${reason}"
+  failures=$((failures + 1))
+fi
+write "a Go config in a Rust repo asks (weakened-checks' hook only)" .golangci.yml 'x' ask "weakened-checks hook"
+write "a TypeScript suppression in a Rust repo asks" web/a.ts '// @ts-ignore
+const x = 1;' ask "weakened-checks hook"
+
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook: rust-ci's rules still ask" deny.toml 'x' ask "rust protect hook: deny.toml controls"
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook is said in additionalContext beside the ask" deny.toml 'x' ask '"additionalContext": "rust protect hook: weakened-checks'"'"' hook was not found'
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" run_json "a missing shared hook is said in additionalContext with rust-ci's own note" '{not json' context "hook was not found"
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" write "a missing shared hook is not said for a change rust-ci's rules pass" NOTES.md '# notes' silent
+WEAKENED_CHECKS_HOOK="${work}/none/protect-config.sh" bash_cmd "a missing shared hook is not said for a plain command" "ls" silent
+
+mkdir -p "${work}/stubs"
+printf '#!/bin/sh\ncat >/dev/null\nexit 3\n' >"${work}/stubs/fails.sh"
+printf '#!/bin/sh\ncat >/dev/null\necho hello\n' >"${work}/stubs/text.sh"
+printf '#!/bin/sh\ncat >/dev/null\nprintf "{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"a\\"}}\\n{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"b\\"}}\\n"\n' >"${work}/stubs/two.sh"
+printf '#!/bin/sh\nexec sleep 30\n' >"${work}/stubs/slow.sh"
+chmod +x "${work}"/stubs/*.sh
+WEAKENED_CHECKS_HOOK="${work}/stubs/fails.sh" write "a failing shared hook is said" NOTES.md '# notes' context "weakened-checks' hook exited 3"
+WEAKENED_CHECKS_HOOK="${work}/stubs/fails.sh" write "a failing shared hook doesn't stop rust-ci's ask" deny.toml 'x' ask "exited 3"
+WEAKENED_CHECKS_HOOK="${work}/stubs/text.sh" write "a shared hook printing text is said" NOTES.md '# notes' context "not hook JSON"
+WEAKENED_CHECKS_HOOK="${work}/stubs/two.sh" write "a shared hook printing two objects is said" NOTES.md '# notes' context "not hook JSON"
+WEAKENED_CHECKS_HOOK="${work}/stubs/slow.sh" write "a slow shared hook is stopped and said" NOTES.md '# notes' context "took longer than"
+
+WEAKENED_CHECKS_PROTECT_CONFIG=off write "WEAKENED_CHECKS_PROTECT_CONFIG=off turns off the shared half" .golangci.yml 'x' silent
+out="$(WEAKENED_CHECKS_PROTECT_CONFIG=off bash -c 'printf "%s" "$1" | (cd "$2" && "$3")' _ "$(jq -n --arg f "${r}/deny.toml" --arg c "${r}" '{cwd: $c, tool_name: "Write", tool_input: {file_path: $f, content: "x"}}')" "${r}" "${hook}")"
+if [[ ${out} == *"rust protect hook: deny.toml controls"* && ${out} != *"weakened-checks hook:"* ]]; then
+  echo "ok   WEAKENED_CHECKS_PROTECT_CONFIG=off leaves rust-ci's half"
+else
+  echo "FAIL WEAKENED_CHECKS_PROTECT_CONFIG=off leaves rust-ci's half: ${out}"
+  failures=$((failures + 1))
+fi
+
+# Installed as a symlink, it finds its remainder beside its real path; copied on
+# its own, it says the remainder is missing and still runs the shared hook.
+mkdir -p "${work}/hooks" "${work}/copy"
+ln -s "${wrapper}" "${work}/hooks/rust-protect-config.sh"
+hook="${work}/hooks/rust-protect-config.sh"
+write "through a symlink, rust-ci's rules still run" build.rs 'x' ask "rust protect hook: build.rs controls"
+cp "${wrapper}" "${work}/copy/rust-protect-config.sh"
+hook="${work}/copy/rust-protect-config.sh"
+write "a copy without its remainder says so, and the shared hook still asks" deny.toml 'x' ask "rust-ci's own check was not found"
+hook="${wrapper}"
+
 # Opt-out.
 export RUST_CI_PROTECT_CONFIG=off
 write "RUST_CI_PROTECT_CONFIG=off turns the hook off" deny.toml 'x' silent
@@ -321,11 +397,15 @@ run_json "unreadable input is reported, not asked" '{not json' context "could no
 p="${work}/plain"
 mkdir -p "${p}/.github/workflows" && git -C "${p}" init -q -b main
 r="${p}"
-write "a non-Rust repo is ignored" .github/workflows/ci.yml 'x' silent
-write "deny.toml in a non-Rust repo is ignored" deny.toml 'x' silent
-bash_cmd "Bash in a non-Rust repo is ignored" "sed -i 's/a/b/' deny.toml" silent
+# rust-ci's own rules skip a repo without a root Cargo.toml; weakened-checks' hook
+# judges every git repository.
+write "a non-Rust repo's workflow asks (weakened-checks' hook only)" .github/workflows/ci.yml 'x' ask "weakened-checks hook"
+write "deny.toml in a non-Rust repo asks (weakened-checks' hook only)" deny.toml 'x' ask "weakened-checks hook"
+bash_cmd "Bash in a non-Rust repo asks (weakened-checks' hook only)" "sed -i 's/a/b/' deny.toml" ask "weakened-checks hook"
 mkdir -p "${p}/sub" && printf '[package]\nname = "sub"\n' >"${p}/sub/Cargo.toml"
-write "a crate below a non-Rust repo root is ignored" sub/clippy.toml 'x' silent
+write "a crate below a non-Rust repo root asks (weakened-checks' hook only)" sub/clippy.toml 'x' ask "weakened-checks hook"
+write "a Go config in a non-Rust repo asks (weakened-checks' hook only)" .golangci.yml 'x' ask "weakened-checks hook"
+write "a Markdown file in a non-Rust repo does not ask" NOTES.md 'x' silent
 
 if [[ ${failures} -ne 0 ]]; then
   echo "${failures} failed"
