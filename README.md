@@ -6,6 +6,7 @@ Shared quality setup for gaius-codius Rust projects: one reusable CI workflow, b
 |---|---|---|
 | Reusable workflow | `.github/workflows/rust.yml` | Called from the project's `ci.yml` |
 | Baseline drift check | `actions/baseline-drift` | Run by the workflow's `lint` job; warns, never fails |
+| New-dependency report | `actions/new-deps` | Run by the workflow's `deps` job on pull requests; reports, never fails |
 | Formatting, toolchain, test profiles | `baseline/rustfmt.toml`, `baseline/rust-toolchain.toml`, `baseline/.config/nextest.toml` | Copied to the project as they are |
 | Lints | `baseline/workspace-lints.toml` | Its `[workspace.lints]` tables copied into the root `Cargo.toml`; a project may add lints |
 | Dependency policy, spelling | `baseline/deny.toml`, `baseline/typos.toml` | Copied as the start of the project's own file; a project adds bans, exceptions, excludes and words |
@@ -22,7 +23,7 @@ Four jobs, on the runner the caller names. Called from a job with id `rust`, the
 | `lint` | Drift from this baseline (warnings only); the toolchain from `rust-toolchain.toml`; the setup scripts; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked` (with `--all-features` if `clippy-all-features` is set); `cargo doc --no-deps --document-private-items --workspace --locked` with `RUSTDOCFLAGS=-D warnings`; typos |
 | `test` | The toolchain; the setup scripts; the project's pre-test action and script; `cargo nextest run` with the `test-command` arguments; the post-test script; `cargo test --workspace --locked --doc` |
 | `mutants` | Only with the `mutants` input on, and only on pull requests (skipped on other events; a skipped job counts as passed for a required check). The toolchain; the setup scripts; the pre-test action and script; cargo-mutants 27.1.0 on the pull request's diff against its base commit (`cargo mutants --in-diff`), in place, with the `mutants-arguments`. A mutant the tests don't catch, or one that times out, fails the job; a diff without Rust code passes |
-| `deps` | The toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
+| `deps` | On pull requests, the crates the pull request adds to `Cargo.lock` (annotations and a job summary; never fails); the toolchain; `cargo deny check` (`--all-features --locked`, cargo-deny 0.20.2); `cargo shear` |
 | `workflows` | actionlint 1.7.12 (release binary, checked against a pinned digest); zizmor 1.30.1 (regular persona, online audits) |
 | `rules` | X2, coming: the weakened-checks detector, once it replaces the projects' `scripts/check-weakened.sh`. Not wired yet |
 
@@ -58,6 +59,8 @@ The drift check compares the project's copies with this release's `baseline/`:
 
 Each difference is a warning annotation on the `lint` job. The check never fails the job.
 
+The new-dependency report compares `Cargo.lock` at the pull request's base commit with the pull request's. A crate the base didn't have from that source (a new dependency, or a known crate from a new registry or repository) is a warning; a new version of a crate the base had from the same source is a notice. Workspace members and path dependencies are left out, since the diff shows them. Every new package, with its version and source, also goes into a table in the job summary, which is the full list (GitHub shows at most 10 warnings and 10 notices per step). The report never fails the job: adding a crate is often the right change, and whether a crate is trustworthy and worth what it brings is a reviewer's judgement, not a rule a script can hold. cargo-deny still fails on a banned crate, a disallowed licence or source, or an advisory.
+
 ## Adopting it
 
 Run these from the project's root.
@@ -86,7 +89,7 @@ Run these from the project's root.
            scripts/install-linux-build-deps.sh
    ```
 
-   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own drift action with GitHub's self-repository syntax (`uses: $/...`), so the action and baseline always come from the commit you pinned.
+   Pin the full commit SHA of a release tag (`git ls-remote --tags https://github.com/gaius-codius/rust-ci 'v1.*'`), as for any third-party action: the workflow runs with your checkout. The workflow calls its own actions (the drift check, the new-dependency report) with GitHub's self-repository syntax (`uses: $/...`), so the actions and baseline always come from the commit you pinned.
 
    Project-only jobs (fuzzing, full or sharded mutation runs, extra platforms, coverage, release builds) stay in the project's `ci.yml` and can `needs: rust`. Steps a project needs inside the shared jobs go in through the inputs: `setup-scripts` for packages and pinned libraries, `pre-test-action` or `pre-test-script` for test data and environment, `post-test-script` for checks that reuse the test build.
 
@@ -173,7 +176,7 @@ A release is one commit tagged `v1.x.y`:
 3. Repoint each project's `ci.yml` pin (the commit SHA, with `# v1.x.y` beside it) and its `lefthook.yml` `ref` together.
 4. Never move or delete a `v1.x.y` tag. A repository ruleset ("Release tags") rejects updates and deletions of `v1.*` tags; it doesn't cover the moving `v1` tag.
 
-`rust.yml` refers to its own drift action as `$/actions/baseline-drift`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
+`rust.yml` refers to its own actions as `$/actions/baseline-drift` and `$/actions/new-deps`, which GitHub resolves to the commit being run, so a release needs no self-reference edit. actionlint 1.7.12 doesn't know that syntax yet; `.github/actionlint.yaml` excuses only those references.
 
 A branch ruleset ("main checks") requires `self-test`, `actions` and the four `rust-workflow / ...` checks before anything merges into `main`. Repository admins bypass it.
 
@@ -183,4 +186,4 @@ v2.0.0 is the first major version after v1. What can fail a project that passed 
 
 - `test-command` defaults to `--no-tests=fail`. A project with no tests yet passes its command with `--no-tests=pass`.
 
-CI runs `tests/test-drift.sh` (the drift check's cases), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.
+CI runs `tests/test-drift.sh` (the drift check's cases), `tests/test-new-deps.sh` (the new-dependency report's cases, on `Cargo.lock` pairs in a temporary repository), shellcheck, actionlint and zizmor. It also runs `rust.yml` itself, on pull requests and pushes, against a fixture workspace at this repository's root: `Cargo.toml` (with a copy of the baseline's lint tables), `crates/fixture` (a unit test and a doctest), symlinks to the baseline files, a pre-test action (`.github/actions/pre-test`), and setup and post-test scripts in `tests/` that check the inputs run in order. The `actions` job runs this commit's drift action against the fixture and fails unless it reports no drift. The fixture exists only for these runs; rust-ci isn't a Rust library.

@@ -372,10 +372,22 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      # On pull requests the whole history, so the base commit's Cargo.lock can
+      # be read; elsewhere the commit alone.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      # Annotations and a job summary only: a new crate can be the right call,
+      # so a person reviews the list rather than the job failing. $/ is rust-ci
+      # at the commit the caller pinned.
+      - name: List the crates the pull request adds
+        if: github.event_name == 'pull_request'
+        uses: $/actions/new-deps
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
 
       # cargo-deny needs cargo and reads the toolchain like the other jobs do.
       - name: Install the pinned toolchain (rust-toolchain.toml)
