@@ -1,0 +1,7 @@
+# Everything a project pins or copies from rust-ci: the baseline, the actions, the
+# Claude Code hooks, and this repo's own CI and settings. A branch ruleset requiring
+# code-owner review makes these need the owner's approval.
+/baseline/   @gaius-codius
+/actions/    @gaius-codius
+/agent/      @gaius-codius
+/.github/    @gaius-codius
