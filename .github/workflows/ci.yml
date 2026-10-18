@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the baseline drift check
+        run: ./tests/test-drift.sh
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Test that CARGO_BUILD_WARNINGS=deny fails on a baseline lint
+        run: ./tests/test-warnings-deny.sh
+
+      - name: Shellcheck
+        run: shellcheck -S warning tests/*.sh
+
+      # Pinned by digest: a tag can be moved.
+      - name: Actionlint
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+      - name: Zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+
+      - name: Test the new-dependency report
+        run: ./tests/test-new-deps.sh
+
+      - name: Test the argument check
+        run: ./tests/test-check-args.sh
+
+      - name: Test the env guard
+        run: ./tests/test-env-guard.sh
+
+      # The same release binary and digest as rust.yml's secrets job.
+      - name: Install gitleaks
+        shell: bash
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "${dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check -
+          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
+          echo "${dir}" >>"${GITHUB_PATH}"
+
+      - name: Test that a pull request's .gitattributes can't hide its changes
+        run: ./tests/test-gitattributes.sh
+
+  rust-workflow:
+    # Runs rust.yml as a project would, against the fixture workspace at the
+    # repository root (Cargo.toml, crates/fixture, and symlinks to the
+    # baseline), so a change to the workflow or the baseline runs before it's
+    # released. rust.yml calls its drift action with $/, so this commit's
+    # action and baseline run here too.
+    uses: $/.github/workflows/rust.yml
+    with:
+      timeout-minutes: 20
+      setup-scripts: |
+        tests/fixture-setup.sh one two
+      pre-test-action: true
+      test-command: cargo nextest run --workspace --all-targets --locked --profile ci --no-tests=fail
+      post-test-script: tests/fixture-post-test.sh
+      # On pull requests only; the fixture's unit test catches every mutant.
+      mutants: true
+      mutants-arguments: --test-tool nextest
+
+  actions:
+    # This commit's drift action against the fixture, which must show no drift
+    # (a baseline setting missing from the fixture is only a warning, so it
+    # would pass in rust.yml).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare with the rust-ci baseline
+        uses: $/actions/baseline-drift
+
+      - name: The fixture has no drift
+        run: |
+          out="$(python3 -I actions/baseline-drift/drift.py)"
+          printf '%s\n' "${out}"
+          test "${out}" = "rust-ci baseline: no drift."

@@ -1,0 +1,660 @@
+name: rust
+
+# Shared Rust checks. Projects call this from their own ci.yml:
+#   jobs:
+#     rust:
+#       uses: gaius-codius/rust-ci/.github/workflows/rust.yml@<release commit SHA> # v4.x.y
+#       with:
+#         setup-scripts: scripts/install-linux-build-deps.sh
+# The checks report as "rust / lint", "rust / test", "rust / deps",
+# "rust / workflows", "rust / secrets" and, with the mutants input on,
+# "rust / mutants" (the caller's job id, then the job's name).
+# The toolchain comes from the project's rust-toolchain.toml.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner labels as a JSON list, for example '["ubuntu-latest"]' or '["self-hosted","linux","x64","<project>"]'.
+        type: string
+        default: '["ubuntu-latest"]'
+      timeout-minutes:
+        description: Timeout of each job. GitHub's own default is 6 hours.
+        type: number
+        default: 60
+      setup-scripts:
+        description: >-
+          Scripts the lint and test jobs run after installing the toolchain and before
+          building, one per line, each a path from the repository root with optional
+          arguments (for example native build dependencies or pinned libraries). Empty
+          runs none. A check fails if a script sets a variable through $GITHUB_ENV that
+          changes how cargo, rustc, clippy or the test runners work, or puts another
+          cargo, rustc, git or bash first on PATH (actions/env-guard).
+        type: string
+        default: ""
+      cache-key-files:
+        description: >-
+          A glob of files whose contents go into the build cache's key (for example a
+          script that pins native libraries the build links). Empty adds nothing.
+        type: string
+        default: ""
+      target-dir:
+        description: >-
+          For a persistent self-hosted runner: an absolute directory on the runner that
+          keeps each job's build between runs, as <target-dir>/<owner>/<repo>/<job>. Set,
+          it replaces the GitHub build cache, whose download and upload take longer than
+          an incremental build there. Empty uses the GitHub cache.
+        type: string
+        default: ""
+      pre-test-action:
+        description: >-
+          Run the caller's composite action at .github/actions/pre-test in the test job,
+          after the setup scripts and before the tests. Use it for setup that needs other
+          actions (a cache, a download) or sets environment variables for the tests
+          (write them to $GITHUB_ENV; the ones setup-scripts names are refused).
+        type: boolean
+        default: false
+      pre-test-script:
+        description: A script the test job runs before the tests, a path from the repository root. Empty runs none.
+        type: string
+        default: ""
+      test-command:
+        description: >-
+          The test run: "cargo nextest run" and its arguments, written out in full so a
+          project's own checks can read the arguments in its ci.yml. The arguments are
+          split on spaces. --no-tests=fail fails a run that finds no tests (a filter or
+          a target that matches nothing). Arguments that pass tests without running
+          them (--no-tests=pass or warn, --retries, --no-run, --partition, --run-ignored
+          only, another config or archive) fail the job (actions/check-args).
+        type: string
+        default: cargo nextest run --workspace --locked --profile ci --no-tests=fail
+      post-test-script:
+        description: >-
+          A script the test job runs after the tests, a path from the repository root, for
+          checks that reuse the test build. Empty runs none.
+        type: string
+        default: ""
+      doctest:
+        description: Run `cargo test --workspace --locked --doc` (nextest doesn't run doctests). Turn off while the workspace has no library crate.
+        type: boolean
+        default: true
+      clippy-all-features:
+        description: Run clippy with --all-features, so code behind features is linted too.
+        type: boolean
+        default: false
+      doc-all-features:
+        description: Build the docs with --all-features, so code behind features is checked too.
+        type: boolean
+        default: false
+      deny-arguments:
+        description: >-
+          Arguments to `cargo deny`, before `check`. --config, --manifest-path,
+          --metadata-path, --exclude and a subcommand fail the job.
+        type: string
+        default: --all-features --locked
+      gitleaks-config:
+        description: >-
+          A gitleaks config file for the secrets job, a path from the repository root.
+          Empty uses .gitleaks.toml at the root if there is one (gitleaks reads it by
+          itself), else gitleaks' default rules.
+        type: string
+        default: ""
+      gitleaks-arguments:
+        description: >-
+          Extra arguments to gitleaks in the secrets job, split on spaces. Arguments
+          that skip or forgive findings (--exit-code, --baseline-path, --enable-rule,
+          --gitleaks-ignore-path, --log-opts, --config: use gitleaks-config) fail the
+          job.
+        type: string
+        default: ""
+      gitleaks-allow-comments:
+        description: >-
+          Honour inline gitleaks:allow comments in the secrets job. Off, the job passes
+          --ignore-gitleaks-allow, so a secret can't be waved through in the change
+          that adds it; .gitleaksignore still applies.
+        type: boolean
+        default: false
+      mutants:
+        description: >-
+          Add the mutants job: on pull requests, cargo-mutants tests the code the pull
+          request changes and fails on a mutant the tests don't catch. On other events
+          the job is skipped.
+        type: boolean
+        default: false
+      mutants-arguments:
+        description: >-
+          Extra arguments to `cargo mutants`, split on spaces, for example
+          "--test-tool nextest" (cargo-nextest is installed) or "--timeout 120". The job
+          already passes --in-diff, --in-place, --output and --no-config: the pull
+          request's .cargo/mutants.toml is not read, so cargo-mutants options go here.
+          Arguments that leave mutants out or test none (--list, --check, --exclude,
+          --exclude-re, --re, --file, --package, --shard, --baseline) fail the job.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # On a pull request the drift check reads the base commit's files, so
+          # it needs the history; elsewhere one commit is enough.
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      - name: Compare with the rust-ci baseline
+        # $/ is this repository (rust-ci) at the commit the caller pinned, so the
+        # drift check and its baseline always come from the same release.
+        uses: $/actions/baseline-drift
+        with:
+          # A baseline setting the pull request removes is an error. Empty on
+          # other events.
+          base-ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
+      - name: Cache the build
+        if: inputs.target-dir == ''
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
+
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      # The setup scripts can't have changed the build through $GITHUB_ENV or
+      # $GITHUB_PATH.
+      - name: Check the environment
+        if: inputs.setup-scripts != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        env:
+          ALL_FEATURES: ${{ inputs.clippy-all-features && '--all-features' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one flag
+          cargo clippy --workspace --all-targets ${ALL_FEATURES} --locked
+
+      # Broken doc links and stray HTML in doc comments.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+          ALL_FEATURES: ${{ inputs.doc-all-features && '--all-features' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # empty or one flag
+          cargo doc --no-deps --document-private-items --workspace ${ALL_FEATURES} --locked
+
+      - name: Typos
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+
+  test:
+    name: test
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the test-command arguments
+        uses: $/actions/check-args
+        with:
+          tool: nextest
+          arguments: ${{ inputs.test-command }}
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
+      - name: Cache the build
+        if: inputs.target-dir == ''
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
+
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      # The caller's own action, from the checkout above. ./ is the caller's
+      # workspace; $/ would be rust-ci.
+      - name: Run the project's pre-test action
+        if: inputs.pre-test-action
+        uses: ./.github/actions/pre-test # zizmor: ignore[self-repository]
+
+      - name: Run the pre-test script
+        if: inputs.pre-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.pre-test-script }}
+        run: '"./${SCRIPT}"'
+
+      # The latest version install-action v2.87.22 knows; the mutants job
+      # installs the same one.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest@0.9.146
+
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          tools: cargo-nextest
+
+      - name: Run the tests
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          prefix='cargo nextest run'
+          if [[ ${TEST_COMMAND} != "${prefix}" && ${TEST_COMMAND} != "${prefix} "* ]]; then
+            echo "::error::test-command must start with '${prefix}', got: ${TEST_COMMAND}"
+            exit 1
+          fi
+          read -r -a args <<<"${TEST_COMMAND#"${prefix}"}"
+          echo "cargo nextest run ${args[*]}"
+          cargo nextest run "${args[@]}"
+
+      - name: Run the post-test script
+        if: inputs.post-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.post-test-script }}
+        run: '"./${SCRIPT}"'
+
+      - name: Check the environment after the post-test script
+        if: inputs.doctest && inputs.post-test-script != ''
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+
+      # nextest doesn't run doctests.
+      - name: Doctests
+        if: inputs.doctest
+        run: cargo test --workspace --locked --doc
+
+  # Mutation testing of the pull request's diff only: a full run takes too long
+  # for every pull request, and a project can schedule one in its own workflow.
+  # Skipped on other events; a skipped job counts as passed for a required check.
+  mutants:
+    name: mutants
+    if: inputs.mutants && github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      # Most mutants leave a warning (an unused argument); denied, each would
+      # fail to build and count as unviable, not tested. The lint job checks
+      # warnings.
+      CARGO_BUILD_WARNINGS: warn
+    steps:
+      # The whole history, so the diff against the base commit can be taken.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the mutants-arguments
+        uses: $/actions/check-args
+        with:
+          tool: mutants
+          arguments: ${{ inputs.mutants-arguments }}
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - name: Keep the build on the runner
+        if: inputs.target-dir != ''
+        env:
+          TARGET_ROOT: ${{ inputs.target-dir }}
+        run: |
+          if [[ ${TARGET_ROOT} != /* ]]; then
+            echo "::error::target-dir must be an absolute path, got: ${TARGET_ROOT}"
+            exit 1
+          fi
+          echo "CARGO_TARGET_DIR=${TARGET_ROOT}/${GITHUB_REPOSITORY}/${GITHUB_JOB}" >>"${GITHUB_ENV}"
+
+      - name: Cache the build
+        if: inputs.target-dir == ''
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
+          # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
+          # the job started, rustup among them, which breaks persistent
+          # self-hosted runners. Tools come from install-action anyway.
+          cache-bin: false
+
+      # Where the toolchain is, before any project script runs; the guard
+      # before each check compares with it.
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
+      - name: Run the setup scripts
+        if: inputs.setup-scripts != ''
+        shell: bash
+        env:
+          SETUP_SCRIPTS: ${{ inputs.setup-scripts }}
+        run: |
+          while read -r -a cmd; do
+            [[ ${#cmd[@]} -gt 0 ]] || continue
+            echo "::group::${cmd[*]}"
+            "${cmd[@]}"
+            echo "::endgroup::"
+          done <<<"${SETUP_SCRIPTS}"
+
+      # The mutants run the tests, so they get the same setup as the test job.
+      - name: Run the project's pre-test action
+        if: inputs.pre-test-action
+        uses: ./.github/actions/pre-test # zizmor: ignore[self-repository]
+
+      - name: Run the pre-test script
+        if: inputs.pre-test-script != ''
+        shell: bash
+        env:
+          SCRIPT: ${{ inputs.pre-test-script }}
+        run: '"./${SCRIPT}"'
+
+      # cargo-nextest for a project that passes --test-tool nextest, the same
+      # version as the test job's.
+      - name: Install cargo-mutants and cargo-nextest
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
+
+      # The setup scripts and the pre-test action and script can't have changed
+      # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          warnings: warn
+          tools: cargo-mutants cargo-nextest
+
+      # A pull request's own .gitattributes can mark a file binary or -diff,
+      # which would leave its changes out of the diff: $GIT_DIR/info/attributes
+      # comes before every .gitattributes, and "diff" makes every file a text
+      # diff (NUL bytes too). The diff prefixes are spelled out because a
+      # runner's git config can change them, and cargo-mutants reads the paths
+      # after them. --no-config leaves out the pull request's
+      # .cargo/mutants.toml, which could exclude every mutant. --in-place
+      # mutates the checkout, which the job throws away, so the build uses the
+      # cached or kept target directory. An empty diff, or one without Rust
+      # files, passes; a surviving mutant fails the step (exit 2), and so does a
+      # mutant that times out (exit 3).
+      - name: Mutation-test the pull request's diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MUTANTS_ARGUMENTS: ${{ inputs.mutants-arguments }}
+        run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
+          out="${RUNNER_TEMP}/mutants"
+          mkdir -p "${out}"
+          git diff --no-color --no-ext-diff --no-textconv --text \
+            --src-prefix=a/ --dst-prefix=b/ "${BASE_SHA}...HEAD" >"${out}/pr.diff"
+          read -r -a args <<<"${MUTANTS_ARGUMENTS}"
+          echo "cargo mutants --no-config --in-diff pr.diff --in-place ${args[*]}"
+          cargo mutants --no-config --in-diff "${out}/pr.diff" --in-place \
+            --output "${out}" "${args[@]}"
+
+  deps:
+    name: deps
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      # On pull requests the whole history, so the base commit's Cargo.lock can
+      # be read; elsewhere the commit alone.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      # Annotations and a job summary only: a new crate can be the right call,
+      # so a person reviews the list rather than the job failing. $/ is rust-ci
+      # at the commit the caller pinned.
+      - name: List the crates the pull request adds
+        if: github.event_name == 'pull_request'
+        uses: $/actions/new-deps
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+
+      - name: Check the deny-arguments
+        uses: $/actions/check-args
+        with:
+          tool: deny
+          arguments: ${{ inputs.deny-arguments }}
+
+      # cargo-deny needs cargo and reads the toolchain like the other jobs do.
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      # 0.20.2 is the version EmbarkStudios/cargo-deny-action v2.1.1 ran.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: cargo-deny
+        shell: bash
+        env:
+          DENY_ARGUMENTS: ${{ inputs.deny-arguments }}
+        run: |
+          # Unquoted on purpose: the arguments are split on spaces. The options
+          # before `check` are the ones cargo-deny-action passed.
+          # shellcheck disable=SC2086
+          cargo deny --log-level warn --manifest-path ./Cargo.toml ${DENY_ARGUMENTS} check
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-shear
+
+      - name: cargo-shear
+        run: cargo shear
+
+  workflows:
+    name: workflows
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: zizmor@1.30.1
+
+      # install-action doesn't carry actionlint, so this downloads the release
+      # binary (Linux x64) and checks it against the pinned digest.
+      - name: Install actionlint
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          dir="${RUNNER_TEMP}/actionlint"
+          mkdir -p "${dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${dir}/${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  ${dir}/${archive}" | sha256sum --check -
+          tar -xzf "${dir}/${archive}" -C "${dir}" actionlint
+          echo "${dir}" >>"${GITHUB_PATH}"
+
+      - name: actionlint
+        run: actionlint -color
+
+      # The settings zizmor-action ran with: regular persona, online audits
+      # (they need the token), colour, no SARIF upload.
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona=regular --color=always .
+
+  secrets:
+    name: secrets
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      # On pull requests the whole history, so the pull request's commits can
+      # be scanned; elsewhere the commit alone.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+
+      - name: Check the gitleaks-arguments
+        uses: $/actions/check-args
+        with:
+          tool: gitleaks
+          arguments: ${{ inputs.gitleaks-arguments }}
+
+      # install-action doesn't carry gitleaks, so this downloads the release
+      # binary (Linux x64) and checks it against the pinned digest.
+      - name: Install gitleaks
+        shell: bash
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "${dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "${dir}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check -
+          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
+          echo "${dir}" >>"${GITHUB_PATH}"
+
+      # A pull request: every commit in it (git mode), so a secret added in one
+      # commit and deleted in a later one is still found; it stays in the
+      # history once merged. Other events: the files in the checkout (dir
+      # mode), which needs no history and doesn't fail again on a secret that
+      # was removed and rotated long ago. Secrets are redacted in the log.
+      # Inline gitleaks:allow comments are ignored unless the input allows
+      # them (--ignore-gitleaks-allow passed twice is fine). A pull request's
+      # own .gitattributes can mark a file binary or -diff, which hides its
+      # changes from git mode: $GIT_DIR/info/attributes comes before every
+      # .gitattributes, and "diff" makes every file a text diff (NUL bytes too).
+      - name: gitleaks
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CONFIG_PATH: ${{ inputs.gitleaks-config }}
+          GITLEAKS_ARGUMENTS: ${{ inputs.gitleaks-arguments }}
+          ALLOW_COMMENTS: ${{ inputs.gitleaks-allow-comments }}
+        run: |
+          attributes="$(git rev-parse --path-format=absolute --git-path info/attributes)"
+          mkdir -p "$(dirname "${attributes}")"
+          printf '* diff\n' >>"${attributes}"
+          args=(--redact --verbose --no-banner)
+          if [[ ${ALLOW_COMMENTS} != true ]]; then
+            args+=(--ignore-gitleaks-allow)
+          fi
+          if [[ -n ${CONFIG_PATH} ]]; then
+            args+=(--config "${CONFIG_PATH}")
+          fi
+          read -r -a extra <<<"${GITLEAKS_ARGUMENTS}"
+          args+=("${extra[@]}")
+          if [[ ${EVENT_NAME} == pull_request ]]; then
+            echo "gitleaks git ${args[*]} --log-opts=${BASE_SHA}..HEAD ."
+            gitleaks git "${args[@]}" "--log-opts=${BASE_SHA}..HEAD" .
+          else
+            echo "gitleaks dir ${args[*]} ."
+            gitleaks dir "${args[@]}" .
+          fi
+
+  # Weakened checks aren't a job here: the gaius-codius/weakened-checks action
+  # runs in each project's rules.yml, which also triggers on a PR body edit.

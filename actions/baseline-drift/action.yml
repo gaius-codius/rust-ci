@@ -1,0 +1,29 @@
+name: rust-ci baseline drift
+description: >
+  Compares the project's copies of the rust-ci baseline: rustfmt.toml,
+  rust-toolchain.toml, .config/nextest.toml, clippy.toml, the common core of
+  deny.toml and typos.toml, and the [workspace.lints] tables in Cargo.toml,
+  which every workspace member must take with `[lints] workspace = true`.
+  Fails on a weakened or changed setting, an extra lint at allow, a setting
+  removed since base-ref, a member that doesn't take the workspace lints, a
+  clippy or rustfmt config file that replaces the root's, a .cargo/config.toml
+  that loosens CI, a switch that takes tests out of the run, and an exclude,
+  advisory ignore or bans skip new since base-ref; warns on a baseline setting
+  the project hasn't copied yet. Needs python3 (3.11 or later) on PATH, and
+  git with base-ref.
+inputs:
+  base-ref:
+    description: >-
+      The commit to compare against for removals (a pull request's base), which
+      must be in the checkout. A baseline setting the project had there and no
+      longer has is an error. Empty checks no removals.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Compare with the rust-ci baseline
+      shell: bash
+      env:
+        DRIFT_BASE_REF: ${{ inputs.base-ref }}
+      run: python3 -I "${GITHUB_ACTION_PATH}/drift.py"

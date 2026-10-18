@@ -1,0 +1,8 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # rust.yml calls its own actions at the release it belongs to (a tag
+        # protected by the "Release tags" ruleset); see README "Releases".
+        gaius-codius/rust-ci/*: ref-pin
+        "*": hash-pin

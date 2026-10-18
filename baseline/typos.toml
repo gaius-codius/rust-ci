@@ -1,0 +1,11 @@
+# The common core. Projects add their own excludes and words; the drift check
+# compares only what is here.
+[files]
+extend-exclude = [
+  "Cargo.lock",
+  "LICENSE-*",
+]
+
+# Real words typos doesn't know. Add specialist terms here when they're
+# needed, with a comment saying why.
+[default.extend-words]

@@ -1,0 +1,26 @@
+# Everything a project pins or copies from rust-ci: the baseline, the actions, and
+# this repo's own CI and settings. A branch ruleset requiring code-owner review makes
+# these need the owner's approval.
+/baseline/   @gaius-codius
+/actions/    @gaius-codius
+/.github/    @gaius-codius
+
+# The tests that pin what the actions catch, and the fixture workspace CI
+# checks this repo as (its config files are symlinks into baseline/).
+/tests/                 @gaius-codius
+/Cargo.toml             @gaius-codius
+/clippy.toml            @gaius-codius
+/rustfmt.toml           @gaius-codius
+/rust-toolchain.toml    @gaius-codius
+/deny.toml              @gaius-codius
+/typos.toml             @gaius-codius
+/.config/               @gaius-codius
+.cargo/                 @gaius-codius
+build.rs                @gaius-codius
+.gitattributes          @gaius-codius
+/.gitleaks.toml         @gaius-codius
+/.gitleaksignore        @gaius-codius
+/lefthook.yml           @gaius-codius
+/lefthook.yaml          @gaius-codius
+/.lefthook.yml          @gaius-codius
+/.lefthook.yaml         @gaius-codius

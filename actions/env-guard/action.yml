@@ -1,0 +1,70 @@
+name: rust-ci env guard
+description: >
+  Guards the checks against the project's own scripts. Run once with no
+  snapshot right after the toolchain is installed, before any project code: it
+  records where cargo, rustc, git and bash are and which CARGO_HOME,
+  RUSTUP_HOME and HOME are in use. Run again, with that snapshot, right before
+  a check: it fails if a setup script, pre-test action or pre-test script has
+  set a variable through $GITHUB_ENV that changes what cargo, rustc, clippy,
+  nextest or cargo-mutants do (rustflags, wrappers, aliases, nextest settings,
+  a weaker CARGO_BUILD_WARNINGS), or put another cargo, rustc, git or bash first
+  on PATH through $GITHUB_PATH. It doesn't see a script that edits files
+  (Cargo config, the tools themselves); code-owner review covers the scripts.
+  Linux only.
+inputs:
+  snapshot:
+    description: The snapshot output of the first run. Empty records one.
+    required: false
+    default: ""
+  warnings:
+    description: The value CARGO_BUILD_WARNINGS must have.
+    required: false
+    default: deny
+  tools:
+    description: >-
+      Tools installed after the snapshot (cargo-nextest, cargo-mutants), space
+      separated, which must be in $CARGO_HOME/bin or install-action's directory.
+    required: false
+    default: ""
+outputs:
+  snapshot:
+    description: The record a later run compares with.
+    value: ${{ steps.record.outputs.snapshot }}
+runs:
+  using: composite
+  steps:
+    - name: Record the toolchain's place
+      id: record
+      if: inputs.snapshot == ''
+      shell: bash
+      env:
+        GUARD_MODE: record
+      run: . "${GITHUB_ACTION_PATH}/env-guard.sh"
+
+    # A project script runs before this, so the shell is named by its path (a
+    # bash first on PATH would be the script's) and started in POSIX mode
+    # (special builtins come before functions exported through $GITHUB_ENV).
+    # The variables bash or the loader read at startup are blanked here, so
+    # they can't stop the guard before it runs, and their values from
+    # $GITHUB_ENV (the env context) are checked instead.
+    - name: Check the environment
+      if: inputs.snapshot != ''
+      shell: /bin/bash --posix --noprofile --norc -e {0}
+      env:
+        GUARD_MODE: check
+        GUARD_SNAPSHOT: ${{ inputs.snapshot }}
+        GUARD_WARNINGS: ${{ inputs.warnings }}
+        GUARD_TOOLS: ${{ inputs.tools }}
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
+        GUARD_SEEN_BASH_ENV: ${{ env.BASH_ENV }}
+        GUARD_SEEN_ENV: ${{ env.ENV }}
+        GUARD_SEEN_SHELLOPTS: ${{ env.SHELLOPTS }}
+        GUARD_SEEN_BASHOPTS: ${{ env.BASHOPTS }}
+        GUARD_SEEN_LD_PRELOAD: ${{ env.LD_PRELOAD }}
+        GUARD_SEEN_LD_AUDIT: ${{ env.LD_AUDIT }}
+      run: . "${GITHUB_ACTION_PATH}/env-guard.sh"
