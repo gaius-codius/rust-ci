@@ -325,6 +325,7 @@ jobs:
       # installs the same one. Each tool's sha256 is its Linux x64 binary's, as
       # install-action v2.87.22 installs it.
       - name: Install cargo-nextest
+        id: nextest
         uses: $/actions/install-tool
         with:
           tool: cargo-nextest@0.9.146
@@ -337,7 +338,7 @@ jobs:
         uses: $/actions/env-guard
         with:
           snapshot: ${{ steps.snapshot.outputs.snapshot }}
-          tools: cargo-nextest@0.9.146
+          tools: ${{ steps.nextest.outputs.path }}
 
       - name: Run the tests
         shell: bash
@@ -454,6 +455,7 @@ jobs:
         run: '"./${SCRIPT}"'
 
       - name: Install cargo-mutants
+        id: mutants
         uses: $/actions/install-tool
         with:
           tool: cargo-mutants@27.1.0
@@ -463,6 +465,7 @@ jobs:
       # For a project that passes --test-tool nextest, the same version as the
       # test job's.
       - name: Install cargo-nextest
+        id: nextest
         uses: $/actions/install-tool
         with:
           tool: cargo-nextest@0.9.146
@@ -476,7 +479,7 @@ jobs:
         with:
           snapshot: ${{ steps.snapshot.outputs.snapshot }}
           warnings: warn
-          tools: cargo-mutants@27.1.0 cargo-nextest@0.9.146
+          tools: ${{ steps.mutants.outputs.path }} ${{ steps.nextest.outputs.path }}
 
       # A pull request's own .gitattributes can mark a file binary or -diff,
       # which would leave its changes out of the diff: $GIT_DIR/info/attributes

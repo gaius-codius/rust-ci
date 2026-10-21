@@ -52,8 +52,8 @@ run_case() {
   local name="$1" want="$2" want_out="$3" o code
   shift 3
   o="$(env -i "${base_env[@]}" GUARD_MODE=check GUARD_SNAPSHOT="${snapshot}" \
-    GUARD_WARNINGS=deny GUARD_TOOLS= GUARD_RUNNER_TEMP="${work}/runner-temp" \
-    BASH_ENV= ENV= SHELLOPTS= BASHOPTS= LD_PRELOAD= LD_AUDIT= GUARD_SEEN_BASH_ENV= GUARD_SEEN_ENV= GUARD_SEEN_SHELLOPTS= GUARD_SEEN_BASHOPTS= \
+    GUARD_WARNINGS=deny GUARD_TOOLS= BASH_ENV= ENV= SHELLOPTS= BASHOPTS= LD_PRELOAD= LD_AUDIT= \
+    GUARD_SEEN_BASH_ENV= GUARD_SEEN_ENV= GUARD_SEEN_SHELLOPTS= GUARD_SEEN_BASHOPTS= \
     GUARD_SEEN_LD_PRELOAD= GUARD_SEEN_LD_AUDIT= "$@" \
     /bin/bash --posix --noprofile --norc -e "${work}/run.sh" 2>&1)"
   code=$?
@@ -108,22 +108,18 @@ run_case "a tool in CARGO_HOME/bin passes" pass "" GUARD_TOOLS="cargo-nextest"
 run_case "a tool elsewhere on PATH fails" fail "cargo-nextest is '${work}/elsewhere/cargo-nextest'" \
   GUARD_TOOLS="cargo-nextest" PATH="${work}/elsewhere:${path}"
 run_case "a missing tool fails" fail "cargo-mutants is 'not found'" GUARD_TOOLS="cargo-mutants"
-run_case "a tool with its version in CARGO_HOME/bin passes" pass "" GUARD_TOOLS="cargo-nextest@0.9.146"
-
-# actions/install-tool's copy in the job's own folder, with target-dir.
-job_tools="${work}/runner-temp/rust-ci-tools"
-mkdir -p "${job_tools}/cargo-nextest@0.9.146" "${job_tools}/cargo-nextest@0.9.1" "${job_tools}/cargo-nextest"
-for dir in "${job_tools}/cargo-nextest@0.9.146" "${job_tools}/cargo-nextest@0.9.1" "${job_tools}/cargo-nextest"; do
-  cp "${work}/elsewhere/cargo-nextest" "${dir}/"
-done
-run_case "a tool in the job's install-tool folder passes" pass "" \
-  GUARD_TOOLS="cargo-nextest@0.9.146" PATH="${job_tools}/cargo-nextest@0.9.146:${path}"
-run_case "another version's install-tool folder fails" fail "not the one rust-ci installed" \
-  GUARD_TOOLS="cargo-nextest@0.9.146" PATH="${job_tools}/cargo-nextest@0.9.1:${path}"
-run_case "an install-tool folder without a version fails" fail "not the one rust-ci installed" \
-  GUARD_TOOLS="cargo-nextest" PATH="${job_tools}/cargo-nextest:${path}"
-run_case "an install-tool folder without runner.temp fails" fail "not the one rust-ci installed" \
-  GUARD_TOOLS="cargo-nextest@0.9.146" GUARD_RUNNER_TEMP= PATH="${job_tools}/cargo-nextest@0.9.146:${path}"
+# actions/install-tool's copy in the job's own folder, by its path.
+job_tool="${work}/runner-temp/rust-ci-tools/cargo-nextest@0.9.146/cargo-nextest"
+mkdir -p "${job_tool%/*}" "${work}/planted/cargo-nextest"
+cp "${work}/elsewhere/cargo-nextest" "${job_tool}"
+run_case "a tool at its install-tool path passes" pass "" \
+  GUARD_TOOLS="${job_tool}" PATH="${job_tool%/*}:${path}"
+run_case "a tool not at its install-tool path fails" fail "not the one rust-ci installed at ${job_tool}" \
+  GUARD_TOOLS="${job_tool}" PATH="${work}/elsewhere:${job_tool%/*}:${path}"
+run_case "a tool in CARGO_HOME/bin, not at its install-tool path, fails" fail \
+  "cargo-nextest is '${cargo_home}/bin/cargo-nextest'" GUARD_TOOLS="${job_tool}"
+run_case "a folder at the install-tool path fails" fail "not the one rust-ci installed" \
+  GUARD_TOOLS="${work}/planted/cargo-nextest" PATH="${work}/planted:${path}"
 
 printf '%s\n' "/opt/other-rust" >"${work}/sysroot.txt"
 run_case "rustc outside the rustup toolchains fails" fail "rustc's sysroot is '/opt/other-rust'"

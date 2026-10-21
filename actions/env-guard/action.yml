@@ -22,10 +22,10 @@ inputs:
     default: deny
   tools:
     description: >-
-      Tools installed after the snapshot, each <name>@<version>
-      (cargo-nextest@0.9.146), space separated, which must be in
-      $CARGO_HOME/bin, install-action's directory, or the job's folder
-      actions/install-tool copies them into.
+      Tools installed after the snapshot, space separated: each the binary's
+      absolute path (actions/install-tool's path output), which the tool must
+      resolve to, or a name, which must be in $CARGO_HOME/bin or
+      install-action's directory.
     required: false
     default: ""
 outputs:
@@ -57,7 +57,6 @@ runs:
         GUARD_SNAPSHOT: ${{ inputs.snapshot }}
         GUARD_WARNINGS: ${{ inputs.warnings }}
         GUARD_TOOLS: ${{ inputs.tools }}
-        GUARD_RUNNER_TEMP: ${{ runner.temp }}
         BASH_ENV: ""
         ENV: ""
         SHELLOPTS: ""

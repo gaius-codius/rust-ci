@@ -118,19 +118,21 @@ for name in "${guard_commands[@]}"; do
   fi
 done
 
-# Tools installed since, each <name>@<version>: install-action puts them in
-# $CARGO_HOME/bin, or in ~/.install-action/bin when cargo isn't there; with
-# target-dir, actions/install-tool copies them into the job's own folder.
+# Tools installed since. A name: install-action puts it in $CARGO_HOME/bin,
+# or in ~/.install-action/bin when cargo isn't there. A path (actions/install-
+# tool's path output): the tool must resolve to exactly that file.
 for tool in ${GUARD_TOOLS}; do
-  name="${tool%%@*}"
+  name="${tool##*/}"
   now="$(command -v "${name}" || true)"
+  if [[ ${tool} == /* ]]; then
+    if [[ ${now} != "${tool}" || ! -f ${tool} ]]; then
+      guard_fail "${name} is '${now:-not found}', not the one rust-ci installed at ${tool}."
+    fi
+    continue
+  fi
   case "${now}" in
     "${guard_was[cargo-home]}/bin/${name}" | "${guard_was[home]}/.install-action/bin/${name}") ;;
-    "${GUARD_RUNNER_TEMP}/rust-ci-tools/${tool}/${name}")
-      [[ -n ${GUARD_RUNNER_TEMP} && ${tool} == *@* ]] ||
-        guard_fail "${name} is '${now}', not the one rust-ci installed."
-      ;;
-    *) guard_fail "${name} is '${now:-not found}', not the one rust-ci installed in ${guard_was[cargo-home]}/bin or ${GUARD_RUNNER_TEMP:-runner.temp}/rust-ci-tools/${tool}." ;;
+    *) guard_fail "${name} is '${now:-not found}', not the one install-action installed in ${guard_was[cargo-home]}/bin." ;;
   esac
 done
 

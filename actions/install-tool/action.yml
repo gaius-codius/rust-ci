@@ -52,40 +52,63 @@ runs:
   steps:
     - name: Look for ${{ inputs.tool }} on the runner
       id: prepare
-      shell: bash
+      shell: /bin/bash --noprofile --norc -e {0}
       env:
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
+        ACTION_DIR: ${{ github.action_path }}
+        TOOL_RUNNER: ${{ runner.os }}/${{ runner.arch }}
+        INSTALL_HOME: ${{ format('{0}/rust-ci-install-home/{1}', runner.temp, inputs.tool) }}
         TOOL_STEP: prepare
         TOOL: ${{ inputs.tool }}
         TOOL_SHA256: ${{ inputs.sha256 }}
         TARGET_ROOT: ${{ inputs.target-dir }}
         ARCHIVE_URL: ${{ inputs.archive-url }}
         JOB_DIR: ${{ inputs.install-dir != '' && inputs.install-dir || format('{0}/rust-ci-tools/{1}', runner.temp, inputs.tool) }}
-      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"
+      run: /bin/bash --noprofile --norc "${ACTION_DIR}/install-tool.sh"
 
     - name: Install ${{ inputs.tool }}
       if: inputs.archive-url == '' && steps.prepare.outputs.mode == 'hosted'
       uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      env:
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
       with:
         tool: ${{ inputs.tool }}
 
     # install-action downloads and extracts in $HOME/.install-action/tmp and
     # deletes it after, so jobs on one runner sharing HOME broke each other's
-    # installs. Here HOME is the job's own stage folder, and CARGO_HOME a folder
-    # that doesn't exist, so the binary lands in <stage>/home/.install-action/bin.
+    # installs. Here HOME is a folder of the job's own in runner.temp (the
+    # binary's folder it puts on PATH stays the job's), and CARGO_HOME a folder
+    # that doesn't exist, so the binary lands in $HOME/.install-action/bin.
     - name: Install ${{ inputs.tool }} for the runner
       if: inputs.archive-url == '' && steps.prepare.outputs.mode == 'install'
       uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
       env:
-        HOME: ${{ steps.prepare.outputs.stage }}/home
-        CARGO_HOME: ${{ steps.prepare.outputs.stage }}/home/.cargo
+        HOME: ${{ format('{0}/rust-ci-install-home/{1}', runner.temp, inputs.tool) }}
+        CARGO_HOME: ${{ format('{0}/rust-ci-install-home/{1}/.cargo', runner.temp, inputs.tool) }}
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
       with:
         tool: ${{ inputs.tool }}
         fallback: none
 
     - name: Download ${{ inputs.tool }}
       if: inputs.archive-url != '' && steps.prepare.outputs.mode != 'kept'
-      shell: bash
+      shell: /bin/bash --noprofile --norc -e {0}
       env:
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
+        ACTION_DIR: ${{ github.action_path }}
+        TOOL_RUNNER: ${{ runner.os }}/${{ runner.arch }}
         TOOL_STEP: download
         TOOL: ${{ inputs.tool }}
         TOOL_SHA256: ${{ inputs.sha256 }}
@@ -95,12 +118,21 @@ runs:
         JOB_DIR: ${{ inputs.install-dir != '' && inputs.install-dir || format('{0}/rust-ci-tools/{1}', runner.temp, inputs.tool) }}
         TOOL_MODE: ${{ steps.prepare.outputs.mode }}
         TOOL_STAGE: ${{ steps.prepare.outputs.stage }}
-      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"
+      run: /bin/bash --noprofile --norc "${ACTION_DIR}/install-tool.sh"
 
     - name: Check ${{ inputs.tool }}
       id: finish
-      shell: bash
+      shell: /bin/bash --noprofile --norc -e {0}
       env:
+        BASH_ENV: ""
+        ENV: ""
+        SHELLOPTS: ""
+        BASHOPTS: ""
+        LD_PRELOAD: ""
+        LD_AUDIT: ""
+        ACTION_DIR: ${{ github.action_path }}
+        TOOL_RUNNER: ${{ runner.os }}/${{ runner.arch }}
+        INSTALL_HOME: ${{ format('{0}/rust-ci-install-home/{1}', runner.temp, inputs.tool) }}
         TOOL_STEP: finish
         TOOL: ${{ inputs.tool }}
         TOOL_SHA256: ${{ inputs.sha256 }}
@@ -110,4 +142,4 @@ runs:
         ADD_TO_PATH: ${{ inputs.add-to-path }}
         TOOL_MODE: ${{ steps.prepare.outputs.mode }}
         TOOL_STAGE: ${{ steps.prepare.outputs.stage }}
-      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"
+      run: /bin/bash --noprofile --norc "${ACTION_DIR}/install-tool.sh"

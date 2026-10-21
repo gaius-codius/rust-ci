@@ -32,7 +32,7 @@ jobs:
         run: ./tests/test-warnings-deny.sh
 
       - name: Shellcheck
-        run: shellcheck -S warning tests/*.sh actions/install-tool/install-tool.sh
+        run: shellcheck -S warning tests/*.sh actions/install-tool/install-tool.sh actions/env-guard/env-guard.sh
 
       # Pinned by digest: a tag can be moved.
       - name: Actionlint
@@ -187,7 +187,7 @@ jobs:
         uses: $/actions/env-guard
         with:
           snapshot: ${{ steps.snapshot.outputs.snapshot }}
-          tools: cargo-nextest@0.9.146 actionlint@1.7.12
+          tools: ${{ steps.nextest-2.outputs.path }} ${{ steps.actionlint-2.outputs.path }}
 
   actions:
     # This commit's drift action against the fixture, which must show no drift

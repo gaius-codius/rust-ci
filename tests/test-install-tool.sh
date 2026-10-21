@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests actions/install-tool/install-tool.sh: runs its steps the way action.yml
-# does, with a fake install-action (a function that writes the binary into
-# $HOME/.install-action/bin, as install-action does with HOME in the stage
-# folder) and release archives served from file:// URLs through a curl that
+# does, with a fake install-action (which writes the binary into
+# $HOME/.install-action/bin, as install-action does with HOME in the job's
+# INSTALL_HOME) and release archives served from file:// URLs through a curl that
 # counts its downloads. Needs bash, curl, tar, sha256sum and GNU coreutils.
 set -uo pipefail
 
@@ -55,16 +55,17 @@ run_tool() {
   fi
   local -a env=(GITHUB_OUTPUT="${jd}/output" GITHUB_PATH="${jd}/path" TOOL="${tool}"
     TOOL_SHA256="${sha}" TARGET_ROOT="${target}" ARCHIVE_URL="${url}" ARCHIVE_SHA256="${asha}"
-    JOB_DIR="${jd}/temp/rust-ci-tools/${tool}" ADD_TO_PATH=true)
+    JOB_DIR="${jd}/temp/rust-ci-tools/${tool}" INSTALL_HOME="${jd}/temp/rust-ci-install-home/${tool}"
+    ADD_TO_PATH=true TOOL_RUNNER=Linux/X64)
   env "${env[@]}" TOOL_STEP=prepare bash "${script}" || return
   local mode stage
   mode="$(out_of "${jd}/output" mode)"
   stage="$(out_of "${jd}/output" stage)"
   if [[ -z ${url} && ${mode} == install ]]; then
-    # install-action with HOME in the stage folder.
+    # install-action with HOME in INSTALL_HOME.
     echo install >>"${downloads}"
-    mkdir -p "${stage}/home/.install-action/bin"
-    cp "${work}/src/${tool#*@}/fake-tool" "${stage}/home/.install-action/bin/"
+    mkdir -p "${jd}/temp/rust-ci-install-home/${tool}/.install-action/bin"
+    cp "${work}/src/${tool#*@}/fake-tool" "${jd}/temp/rust-ci-install-home/${tool}/.install-action/bin/"
   elif [[ -z ${url} && ${mode} == hosted ]]; then
     # install-action into CARGO_HOME/bin, on PATH.
     echo install >>"${downloads}"
@@ -91,6 +92,7 @@ o="$(run_tool first "${target}" fake-tool@1.0.0 "${sha1}" 2>&1)" || fail "first 
 [[ $(out_of "${work}/jobs/first/output" path) == "${work}/jobs/first/temp/rust-ci-tools/fake-tool@1.0.0/fake-tool" ]] ||
   fail "first run's path output is wrong"
 [[ $(leftovers) -eq 0 ]] || fail "first run left a stage folder"
+[[ ! -e ${work}/jobs/first/temp/rust-ci-install-home/fake-tool@1.0.0 ]] || fail "first run left its install HOME"
 ok "a first run installs and keeps the tool"
 
 : >"${downloads}"
@@ -186,14 +188,46 @@ for bad in fake-tool fake-tool@latest "fake-tool@1.0" "Fake@1.0.0" "fake-tool@1.
   [[ ${o} == *"<name>@<exact version>"* ]] || fail "tool '${bad}': ${o}"
 done
 o="$(run_tool bad "${target}" fake-tool@1.0.0 "${sha1^^}" 2>&1)" && fail "an uppercase sha256 passed"
-o="$(run_tool bad relative/dir fake-tool@1.0.0 "${sha1}" 2>&1)" && fail "a relative target-dir passed"
-[[ ${o} == *"must be an absolute path"* ]] || fail "relative target-dir: ${o}"
+for bad_dir in relative/dir "${target}/../x" "${target}/./x" "${target}/.."; do
+  o="$(run_tool bad "${bad_dir}" fake-tool@1.0.0 "${sha1}" 2>&1)" && fail "target-dir '${bad_dir}' passed"
+  [[ ${o} == *"must be an absolute path"* ]] || fail "target-dir '${bad_dir}': ${o}"
+done
 ok "a tool without an exact version, a bad sha256 or a relative target-dir fails"
 
+# Other runners fail before installing anything.
+o="$(env GITHUB_OUTPUT=/dev/null GITHUB_PATH=/dev/null TOOL=fake-tool@1.0.0 TOOL_SHA256="${sha1}" \
+  TARGET_ROOT="${target}" TOOL_RUNNER=Linux/ARM64 TOOL_STEP=prepare bash "${script}" 2>&1)" &&
+  fail "an ARM64 runner passed"
+[[ ${o} == *"pinned for Linux x64 runners; this runner is Linux/ARM64"* ]] || fail "ARM64 runner: ${o}"
+ok "a runner other than Linux x64 fails"
+
 # The later steps only take a stage folder prepare made.
+# A folder a project script put at the job copy's place doesn't take the copy.
+mkdir -p "${work}/jobs/planted/temp/rust-ci-tools/fake-tool@1.0.0/fake-tool"
+o="$(run_tool planted "${target}" fake-tool@1.0.0 "${sha1}" 2>&1)" || fail "planted run: ${o}"
+[[ -f ${work}/jobs/planted/temp/rust-ci-tools/fake-tool@1.0.0/fake-tool ]] ||
+  fail "a planted folder kept the job copy's place"
+ok "a folder at the job copy's place is replaced"
+
+# A kept entry that's a dangling symlink is replaced, not left for every job.
+link_target="${work}/target-link"
+mkdir -p "${link_target}/tools"
+ln -s "${work}/nowhere" "${link_target}/tools/fake-tool@1.0.0"
+o="$(run_tool link "${link_target}" fake-tool@1.0.0 "${sha1}" 2>&1)" || fail "link run: ${o}"
+[[ ! -L ${link_target}/tools/fake-tool@1.0.0 && -f ${link_target}/tools/fake-tool@1.0.0/fake-tool ]] ||
+  fail "a dangling symlink wasn't replaced"
+ok "a dangling symlink at the kept folder is replaced"
+
+# A target-dir with a backslash in it (sha256sum escapes such names).
+o="$(run_tool backslash "${work}/back\\slash" fake-tool@1.0.0 "${sha1}" 2>&1)" || fail "backslash run: ${o}"
+o="$(run_tool backslash-2 "${work}/back\\slash" fake-tool@1.0.0 "${sha1}" 2>&1)" || fail "backslash run 2: ${o}"
+[[ $(out_of "${work}/jobs/backslash-2/output" mode) == kept ]] || fail "a backslash target-dir wasn't reused"
+ok "a target-dir with a backslash works"
+
 for bad_stage in "" /home "${target}/tools" "${target}/tools/.stage-fake-tool@1.0.0.x/../.."; do
   o="$(env GITHUB_OUTPUT=/dev/null GITHUB_PATH=/dev/null TOOL=fake-tool@1.0.0 TOOL_SHA256="${sha1}" \
-    TARGET_ROOT="${target}" ARCHIVE_URL= JOB_DIR="${work}/jobs/stage/temp" ADD_TO_PATH=true \
+    TARGET_ROOT="${target}" ARCHIVE_URL= JOB_DIR="${work}/jobs/stage/temp" ADD_TO_PATH=true TOOL_RUNNER=Linux/X64 \
+    INSTALL_HOME="${work}/jobs/stage/home" \
     TOOL_STEP=finish TOOL_MODE=install TOOL_STAGE="${bad_stage}" bash "${script}" 2>&1)" &&
     fail "stage '${bad_stage}' passed"
   [[ ${o} == *"isn't one prepare made"* ]] || fail "stage '${bad_stage}': ${o}"
