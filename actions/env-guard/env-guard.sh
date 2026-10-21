@@ -118,10 +118,18 @@ for name in "${guard_commands[@]}"; do
   fi
 done
 
-# Tools installed since: install-action puts them in $CARGO_HOME/bin, or in
-# ~/.install-action/bin when cargo isn't there.
-for name in ${GUARD_TOOLS}; do
+# Tools installed since. A name: install-action puts it in $CARGO_HOME/bin,
+# or in ~/.install-action/bin when cargo isn't there. A path (actions/install-
+# tool's path output): the tool must resolve to exactly that file.
+for tool in ${GUARD_TOOLS}; do
+  name="${tool##*/}"
   now="$(command -v "${name}" || true)"
+  if [[ ${tool} == /* ]]; then
+    if [[ ${now} != "${tool}" || ! -f ${tool} ]]; then
+      guard_fail "${name} is '${now:-not found}', not the one rust-ci installed at ${tool}."
+    fi
+    continue
+  fi
   case "${now}" in
     "${guard_was[cargo-home]}/bin/${name}" | "${guard_was[home]}/.install-action/bin/${name}") ;;
     *) guard_fail "${name} is '${now:-not found}', not the one install-action installed in ${guard_was[cargo-home]}/bin." ;;

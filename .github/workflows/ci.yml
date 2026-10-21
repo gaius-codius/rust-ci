@@ -32,7 +32,7 @@ jobs:
         run: ./tests/test-warnings-deny.sh
 
       - name: Shellcheck
-        run: shellcheck -S warning tests/*.sh
+        run: shellcheck -S warning tests/*.sh actions/install-tool/install-tool.sh actions/env-guard/env-guard.sh
 
       # Pinned by digest: a tag can be moved.
       - name: Actionlint
@@ -54,6 +54,9 @@ jobs:
 
       - name: Test the env guard
         run: ./tests/test-env-guard.sh
+
+      - name: Test the tool install
+        run: ./tests/test-install-tool.sh
 
       # The same release binary and digest as rust.yml's secrets job.
       - name: Install gitleaks
@@ -92,6 +95,99 @@ jobs:
       # On pull requests only; the fixture's unit test catches every mutant.
       mutants: true
       mutants-arguments: --test-tool nextest
+
+  install-tool:
+    # actions/install-tool for real with a target-dir, as on a persistent
+    # self-hosted runner: the first run installs and keeps each tool, the
+    # second reuses it, and the env guard accepts the job's copy. rust-workflow
+    # covers the install without target-dir.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CARGO_BUILD_WARNINGS: deny
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record the toolchain's place
+        id: snapshot
+        uses: $/actions/env-guard
+
+      - name: Install cargo-nextest
+        id: nextest-1
+        uses: $/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.146
+          sha256: aac21fea56e7ae3f45b5b7c606e02d62d4ec5b3578658fefe4a98a5f29c4bf1a
+          target-dir: ${{ runner.temp }}/target
+
+      - name: Install cargo-nextest again
+        id: nextest-2
+        uses: $/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.146
+          sha256: aac21fea56e7ae3f45b5b7c606e02d62d4ec5b3578658fefe4a98a5f29c4bf1a
+          target-dir: ${{ runner.temp }}/target
+
+      - name: Install actionlint
+        id: actionlint-1
+        uses: $/actions/install-tool
+        with:
+          tool: actionlint@1.7.12
+          sha256: c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4
+          archive-url: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          archive-sha256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          target-dir: ${{ runner.temp }}/target
+
+      - name: Install actionlint again
+        id: actionlint-2
+        uses: $/actions/install-tool
+        with:
+          tool: actionlint@1.7.12
+          sha256: c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4
+          archive-url: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          archive-sha256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          target-dir: ${{ runner.temp }}/target
+
+      # Where rust.yml's lint job puts it for the typos action.
+      - name: Install typos into runner.temp
+        id: typos
+        uses: $/actions/install-tool
+        with:
+          tool: typos@1.50.3
+          sha256: 2cc30c49b25423c9c5599bbc72e1189b86c08a2ba38d73d210d37ed631486ff3
+          target-dir: ${{ runner.temp }}/target
+          install-dir: ${{ runner.temp }}
+          add-to-path: false
+
+      - name: The second runs reused the kept tools
+        shell: bash
+        env:
+          MODES: >-
+            ${{ steps.nextest-1.outputs.mode }} ${{ steps.nextest-2.outputs.mode }}
+            ${{ steps.actionlint-1.outputs.mode }} ${{ steps.actionlint-2.outputs.mode }}
+            ${{ steps.typos.outputs.mode }}
+          NEXTEST_PATH: ${{ steps.nextest-2.outputs.path }}
+          TYPOS_PATH: ${{ steps.typos.outputs.path }}
+          TOOLS_DIR: ${{ runner.temp }}/target/tools
+        run: |
+          echo "modes: ${MODES}"
+          test "${MODES}" = "install kept install kept install"
+          test "$(command -v cargo-nextest)" = "${NEXTEST_PATH}"
+          test "${TYPOS_PATH}" = "${RUNNER_TEMP}/typos"
+          cargo-nextest nextest --version
+          actionlint --version
+          "${TYPOS_PATH}" --version
+          ls -la "${TOOLS_DIR}"
+          test "$(find "${TOOLS_DIR}" -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
+
+      - name: Check the environment
+        uses: $/actions/env-guard
+        with:
+          snapshot: ${{ steps.snapshot.outputs.snapshot }}
+          tools: ${{ steps.nextest-2.outputs.path }} ${{ steps.actionlint-2.outputs.path }}
 
   actions:
     # This commit's drift action against the fixture, which must show no drift

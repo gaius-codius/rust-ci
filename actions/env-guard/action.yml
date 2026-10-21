@@ -22,8 +22,10 @@ inputs:
     default: deny
   tools:
     description: >-
-      Tools installed after the snapshot (cargo-nextest, cargo-mutants), space
-      separated, which must be in $CARGO_HOME/bin or install-action's directory.
+      Tools installed after the snapshot, space separated: each the binary's
+      absolute path (actions/install-tool's path output), which the tool must
+      resolve to, or a name, which must be in $CARGO_HOME/bin or
+      install-action's directory.
     required: false
     default: ""
 outputs:

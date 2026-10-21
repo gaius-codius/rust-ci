@@ -108,6 +108,18 @@ run_case "a tool in CARGO_HOME/bin passes" pass "" GUARD_TOOLS="cargo-nextest"
 run_case "a tool elsewhere on PATH fails" fail "cargo-nextest is '${work}/elsewhere/cargo-nextest'" \
   GUARD_TOOLS="cargo-nextest" PATH="${work}/elsewhere:${path}"
 run_case "a missing tool fails" fail "cargo-mutants is 'not found'" GUARD_TOOLS="cargo-mutants"
+# actions/install-tool's copy in the job's own folder, by its path.
+job_tool="${work}/runner-temp/rust-ci-tools/cargo-nextest@0.9.146/cargo-nextest"
+mkdir -p "${job_tool%/*}" "${work}/planted/cargo-nextest"
+cp "${work}/elsewhere/cargo-nextest" "${job_tool}"
+run_case "a tool at its install-tool path passes" pass "" \
+  GUARD_TOOLS="${job_tool}" PATH="${job_tool%/*}:${path}"
+run_case "a tool not at its install-tool path fails" fail "not the one rust-ci installed at ${job_tool}" \
+  GUARD_TOOLS="${job_tool}" PATH="${work}/elsewhere:${job_tool%/*}:${path}"
+run_case "a tool in CARGO_HOME/bin, not at its install-tool path, fails" fail \
+  "cargo-nextest is '${cargo_home}/bin/cargo-nextest'" GUARD_TOOLS="${job_tool}"
+run_case "a folder at the install-tool path fails" fail "not the one rust-ci installed" \
+  GUARD_TOOLS="${work}/planted/cargo-nextest" PATH="${work}/planted:${path}"
 
 printf '%s\n' "/opt/other-rust" >"${work}/sysroot.txt"
 run_case "rustc outside the rustup toolchains fails" fail "rustc's sysroot is '/opt/other-rust'"
