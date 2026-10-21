@@ -1,0 +1,113 @@
+name: rust-ci install tool
+description: >
+  Installs one tool at an exact version and checks the binary against its
+  pinned sha256. Without target-dir (GitHub-hosted runners) it installs as
+  before: install-action into $CARGO_HOME/bin, or a release archive into
+  runner.temp. With target-dir (a persistent self-hosted runner) it keeps one
+  checked copy of each version in <target-dir>/tools/<tool>@<version>/ and
+  copies it into the job's own folder in runner.temp, checking the copy, so a
+  second run downloads nothing and a copy another job changed is installed
+  again. An install goes into a folder of its own and is renamed into place,
+  so jobs installing the same version at once don't clash. Linux x64 only.
+inputs:
+  tool:
+    description: The tool and its exact version, for example cargo-nextest@0.9.146.
+    required: true
+  sha256:
+    description: The sha256 of the installed binary (Linux x64).
+    required: true
+  target-dir:
+    description: rust.yml's target-dir input. Empty installs without keeping the tool.
+    required: false
+    default: ""
+  archive-url:
+    description: >-
+      For a tool install-action doesn't carry: a release archive (.tar.gz) with
+      the binary at its top level. Empty uses install-action.
+    required: false
+    default: ""
+  archive-sha256:
+    description: The archive's sha256, with archive-url.
+    required: false
+    default: ""
+  install-dir:
+    description: >-
+      With target-dir: the job's folder the binary is copied into. Empty is
+      runner.temp/rust-ci-tools/<tool>@<version>.
+    required: false
+    default: ""
+  add-to-path:
+    description: Put the job's folder on PATH (install-action puts its own there without target-dir).
+    required: false
+    default: "true"
+outputs:
+  mode:
+    description: hosted (no target-dir), kept (reused from the runner) or install (installed and kept).
+    value: ${{ steps.prepare.outputs.mode }}
+  path:
+    description: The binary the job runs.
+    value: ${{ steps.finish.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - name: Look for ${{ inputs.tool }} on the runner
+      id: prepare
+      shell: bash
+      env:
+        TOOL_STEP: prepare
+        TOOL: ${{ inputs.tool }}
+        TOOL_SHA256: ${{ inputs.sha256 }}
+        TARGET_ROOT: ${{ inputs.target-dir }}
+        ARCHIVE_URL: ${{ inputs.archive-url }}
+        JOB_DIR: ${{ inputs.install-dir != '' && inputs.install-dir || format('{0}/rust-ci-tools/{1}', runner.temp, inputs.tool) }}
+      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"
+
+    - name: Install ${{ inputs.tool }}
+      if: inputs.archive-url == '' && steps.prepare.outputs.mode == 'hosted'
+      uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      with:
+        tool: ${{ inputs.tool }}
+
+    # install-action downloads and extracts in $HOME/.install-action/tmp and
+    # deletes it after, so jobs on one runner sharing HOME broke each other's
+    # installs. Here HOME is the job's own stage folder, and CARGO_HOME a folder
+    # that doesn't exist, so the binary lands in <stage>/home/.install-action/bin.
+    - name: Install ${{ inputs.tool }} for the runner
+      if: inputs.archive-url == '' && steps.prepare.outputs.mode == 'install'
+      uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      env:
+        HOME: ${{ steps.prepare.outputs.stage }}/home
+        CARGO_HOME: ${{ steps.prepare.outputs.stage }}/home/.cargo
+      with:
+        tool: ${{ inputs.tool }}
+        fallback: none
+
+    - name: Download ${{ inputs.tool }}
+      if: inputs.archive-url != '' && steps.prepare.outputs.mode != 'kept'
+      shell: bash
+      env:
+        TOOL_STEP: download
+        TOOL: ${{ inputs.tool }}
+        TOOL_SHA256: ${{ inputs.sha256 }}
+        TARGET_ROOT: ${{ inputs.target-dir }}
+        ARCHIVE_URL: ${{ inputs.archive-url }}
+        ARCHIVE_SHA256: ${{ inputs.archive-sha256 }}
+        JOB_DIR: ${{ inputs.install-dir != '' && inputs.install-dir || format('{0}/rust-ci-tools/{1}', runner.temp, inputs.tool) }}
+        TOOL_MODE: ${{ steps.prepare.outputs.mode }}
+        TOOL_STAGE: ${{ steps.prepare.outputs.stage }}
+      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"
+
+    - name: Check ${{ inputs.tool }}
+      id: finish
+      shell: bash
+      env:
+        TOOL_STEP: finish
+        TOOL: ${{ inputs.tool }}
+        TOOL_SHA256: ${{ inputs.sha256 }}
+        TARGET_ROOT: ${{ inputs.target-dir }}
+        ARCHIVE_URL: ${{ inputs.archive-url }}
+        JOB_DIR: ${{ inputs.install-dir != '' && inputs.install-dir || format('{0}/rust-ci-tools/{1}', runner.temp, inputs.tool) }}
+        ADD_TO_PATH: ${{ inputs.add-to-path }}
+        TOOL_MODE: ${{ steps.prepare.outputs.mode }}
+        TOOL_STAGE: ${{ steps.prepare.outputs.stage }}
+      run: bash "${GITHUB_ACTION_PATH}/install-tool.sh"

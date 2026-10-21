@@ -118,13 +118,19 @@ for name in "${guard_commands[@]}"; do
   fi
 done
 
-# Tools installed since: install-action puts them in $CARGO_HOME/bin, or in
-# ~/.install-action/bin when cargo isn't there.
-for name in ${GUARD_TOOLS}; do
+# Tools installed since, each <name>@<version>: install-action puts them in
+# $CARGO_HOME/bin, or in ~/.install-action/bin when cargo isn't there; with
+# target-dir, actions/install-tool copies them into the job's own folder.
+for tool in ${GUARD_TOOLS}; do
+  name="${tool%%@*}"
   now="$(command -v "${name}" || true)"
   case "${now}" in
     "${guard_was[cargo-home]}/bin/${name}" | "${guard_was[home]}/.install-action/bin/${name}") ;;
-    *) guard_fail "${name} is '${now:-not found}', not the one install-action installed in ${guard_was[cargo-home]}/bin." ;;
+    "${GUARD_RUNNER_TEMP}/rust-ci-tools/${tool}/${name}")
+      [[ -n ${GUARD_RUNNER_TEMP} && ${tool} == *@* ]] ||
+        guard_fail "${name} is '${now}', not the one rust-ci installed."
+      ;;
+    *) guard_fail "${name} is '${now:-not found}', not the one rust-ci installed in ${guard_was[cargo-home]}/bin or ${GUARD_RUNNER_TEMP:-runner.temp}/rust-ci-tools/${tool}." ;;
   esac
 done
 

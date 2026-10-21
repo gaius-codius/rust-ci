@@ -43,7 +43,9 @@ on:
           For a persistent self-hosted runner: an absolute directory on the runner that
           keeps each job's build between runs, as <target-dir>/<owner>/<repo>/<job>. Set,
           it replaces the GitHub build cache, whose download and upload take longer than
-          an incremental build there. Empty uses the GitHub cache.
+          an incremental build there. Every job also keeps its tools there, as
+          <target-dir>/tools/<tool>@<version> (actions/install-tool). Empty uses the
+          GitHub cache and installs the tools in each job.
         type: string
         default: ""
       pre-test-action:
@@ -183,7 +185,7 @@ jobs:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
           # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
           # the job started, rustup among them, which breaks persistent
-          # self-hosted runners. Tools come from install-action anyway.
+          # self-hosted runners. Tools come from actions/install-tool anyway.
           cache-bin: false
 
       # Where the toolchain is, before any project script runs; the guard
@@ -232,6 +234,18 @@ jobs:
           # shellcheck disable=SC2086 # empty or one flag
           cargo doc --no-deps --document-private-items --workspace ${ALL_FEATURES} --locked
 
+      # With target-dir, the typos action finds the kept binary in runner.temp
+      # and doesn't download it; without, it downloads the same version itself.
+      - name: Install typos
+        if: inputs.target-dir != ''
+        uses: $/actions/install-tool
+        with:
+          tool: typos@1.50.3
+          sha256: 2cc30c49b25423c9c5599bbc72e1189b86c08a2ba38d73d210d37ed631486ff3
+          target-dir: ${{ inputs.target-dir }}
+          install-dir: ${{ runner.temp }}
+          add-to-path: false
+
       - name: Typos
         uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
 
@@ -272,7 +286,7 @@ jobs:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
           # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
           # the job started, rustup among them, which breaks persistent
-          # self-hosted runners. Tools come from install-action anyway.
+          # self-hosted runners. Tools come from actions/install-tool anyway.
           cache-bin: false
 
       # Where the toolchain is, before any project script runs; the guard
@@ -308,11 +322,14 @@ jobs:
         run: '"./${SCRIPT}"'
 
       # The latest version install-action v2.87.22 knows; the mutants job
-      # installs the same one.
+      # installs the same one. Each tool's sha256 is its Linux x64 binary's, as
+      # install-action v2.87.22 installs it.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: $/actions/install-tool
         with:
           tool: cargo-nextest@0.9.146
+          sha256: aac21fea56e7ae3f45b5b7c606e02d62d4ec5b3578658fefe4a98a5f29c4bf1a
+          target-dir: ${{ inputs.target-dir }}
 
       # The setup scripts and the pre-test action and script can't have changed
       # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
@@ -320,7 +337,7 @@ jobs:
         uses: $/actions/env-guard
         with:
           snapshot: ${{ steps.snapshot.outputs.snapshot }}
-          tools: cargo-nextest
+          tools: cargo-nextest@0.9.146
 
       - name: Run the tests
         shell: bash
@@ -402,7 +419,7 @@ jobs:
           key: ${{ inputs.cache-key-files != '' && hashFiles(inputs.cache-key-files) || '' }}
           # On saving, cache-bin deletes the files that were in ~/.cargo/bin when
           # the job started, rustup among them, which breaks persistent
-          # self-hosted runners. Tools come from install-action anyway.
+          # self-hosted runners. Tools come from actions/install-tool anyway.
           cache-bin: false
 
       # Where the toolchain is, before any project script runs; the guard
@@ -436,12 +453,21 @@ jobs:
           SCRIPT: ${{ inputs.pre-test-script }}
         run: '"./${SCRIPT}"'
 
-      # cargo-nextest for a project that passes --test-tool nextest, the same
-      # version as the test job's.
-      - name: Install cargo-mutants and cargo-nextest
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - name: Install cargo-mutants
+        uses: $/actions/install-tool
         with:
-          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
+          tool: cargo-mutants@27.1.0
+          sha256: f985f265ee3ea3e453aa98b04c52134953911f692f8ce8abf137f3873202a2d0
+          target-dir: ${{ inputs.target-dir }}
+
+      # For a project that passes --test-tool nextest, the same version as the
+      # test job's.
+      - name: Install cargo-nextest
+        uses: $/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.146
+          sha256: aac21fea56e7ae3f45b5b7c606e02d62d4ec5b3578658fefe4a98a5f29c4bf1a
+          target-dir: ${{ inputs.target-dir }}
 
       # The setup scripts and the pre-test action and script can't have changed
       # the build or the test run through $GITHUB_ENV or $GITHUB_PATH.
@@ -450,7 +476,7 @@ jobs:
         with:
           snapshot: ${{ steps.snapshot.outputs.snapshot }}
           warnings: warn
-          tools: cargo-mutants cargo-nextest
+          tools: cargo-mutants@27.1.0 cargo-nextest@0.9.146
 
       # A pull request's own .gitattributes can mark a file binary or -diff,
       # which would leave its changes out of the diff: $GIT_DIR/info/attributes
@@ -515,9 +541,11 @@ jobs:
 
       # 0.20.2 is the version EmbarkStudios/cargo-deny-action v2.1.1 ran.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: $/actions/install-tool
         with:
           tool: cargo-deny@0.20.2
+          sha256: b329e25933d01c36dd7c47d84ea5716694f9b7caf53a5003d45674703a8ed54a
+          target-dir: ${{ inputs.target-dir }}
 
       - name: cargo-deny
         shell: bash
@@ -529,10 +557,13 @@ jobs:
           # shellcheck disable=SC2086
           cargo deny --log-level warn --manifest-path ./Cargo.toml ${DENY_ARGUMENTS} check
 
+      # 1.14.0 is the version install-action v2.87.22 installed as the latest.
       - name: Install cargo-shear
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: $/actions/install-tool
         with:
-          tool: cargo-shear
+          tool: cargo-shear@1.14.0
+          sha256: 66c6f91695d654846becf97df2c1083545003e28f79389e93b44e8cb0d15ac70
+          target-dir: ${{ inputs.target-dir }}
 
       - name: cargo-shear
         run: cargo shear
@@ -548,27 +579,22 @@ jobs:
           persist-credentials: false
 
       - name: Install zizmor
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: $/actions/install-tool
         with:
           tool: zizmor@1.30.1
+          sha256: d39db5594fd89d57fdadd744079e1b3a405f24ff312714904f8bd708c69f322f
+          target-dir: ${{ inputs.target-dir }}
 
       # install-action doesn't carry actionlint, so this downloads the release
-      # binary (Linux x64) and checks it against the pinned digest.
+      # archive (Linux x64) and checks it against the pinned digest.
       - name: Install actionlint
-        shell: bash
-        env:
-          ACTIONLINT_VERSION: 1.7.12
-          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-        run: |
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          dir="${RUNNER_TEMP}/actionlint"
-          mkdir -p "${dir}"
-          curl --fail --silent --show-error --location --retry 3 \
-            --output "${dir}/${archive}" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
-          echo "${ACTIONLINT_SHA256}  ${dir}/${archive}" | sha256sum --check -
-          tar -xzf "${dir}/${archive}" -C "${dir}" actionlint
-          echo "${dir}" >>"${GITHUB_PATH}"
+        uses: $/actions/install-tool
+        with:
+          tool: actionlint@1.7.12
+          sha256: c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4
+          archive-url: https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          archive-sha256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          target-dir: ${{ inputs.target-dir }}
 
       - name: actionlint
         run: actionlint -color
@@ -600,22 +626,15 @@ jobs:
           arguments: ${{ inputs.gitleaks-arguments }}
 
       # install-action doesn't carry gitleaks, so this downloads the release
-      # binary (Linux x64) and checks it against the pinned digest.
+      # archive (Linux x64) and checks it against the pinned digest.
       - name: Install gitleaks
-        shell: bash
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          dir="${RUNNER_TEMP}/gitleaks"
-          mkdir -p "${dir}"
-          curl --fail --silent --show-error --location --retry 3 \
-            --output "${dir}/${archive}" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
-          echo "${GITLEAKS_SHA256}  ${dir}/${archive}" | sha256sum --check -
-          tar -xzf "${dir}/${archive}" -C "${dir}" gitleaks
-          echo "${dir}" >>"${GITHUB_PATH}"
+        uses: $/actions/install-tool
+        with:
+          tool: gitleaks@8.30.1
+          sha256: 88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509
+          archive-url: https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          archive-sha256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          target-dir: ${{ inputs.target-dir }}
 
       # A pull request: every commit in it (git mode), so a secret added in one
       # commit and deleted in a later one is still found; it stays in the
