@@ -26,7 +26,8 @@ failures=0
 
 # run_case <name> <exit status> <expected output substring> <unexpected substring or "">
 # Sets up the project from the baseline, applies the commands on stdin, then
-# runs drift.py in it, with DRIFT_BASE_REF set to $BASE_REF.
+# runs drift.py in it, with DRIFT_BASE_REF set to $BASE_REF and DRIFT_PR_BODY
+# to $PR_BODY (empty when unset, so the caller's environment can't leak in).
 run_case() {
   local name="$1" want_code="$2" want="$3" unwanted="$4" out code
   rm -rf "${work}/project" && mkdir -p "${work}/project/.config"
@@ -40,7 +41,7 @@ run_case() {
   } >"${work}/project/Cargo.toml"
   (cd "${work}/project" && bash -c "${helpers}"$'\n'"$(cat)")
   out="$(cd "${work}/project" &&
-    DRIFT_BASE_REF="${BASE_REF:-}" python3 -I "${work}/rust-ci/actions/baseline-drift/drift.py" 2>&1)"
+    DRIFT_BASE_REF="${BASE_REF:-}" DRIFT_PR_BODY="${PR_BODY:-}" python3 -I "${work}/rust-ci/actions/baseline-drift/drift.py" 2>&1)"
   code=$?
   if [[ ${code} -ne ${want_code} ]] || [[ "${out}" != *"${want}"* ]] ||
     [[ -n "${unwanted}" && "${out}" == *"${unwanted}"* ]]; then
@@ -190,6 +191,90 @@ BASE_REF=HEAD run_case "new bans skip is an error" 1 'deny.toml: bans.skip-tree 
 BASE_REF=HEAD run_case "new workspace exclude is an error" 1 'Cargo.toml: workspace.exclude has "crates/a", new since the base commit; a new workspace exclude needs' "no drift" \
   <<<"commit_base && add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
 run_case "advisory ignore without a base is not drift" 0 "no drift" "::" \
+  <<<"sed -i 's/^ignore = \[\]/ignore = [\"RUSTSEC-2024-0001\"]/' deny.toml"
+
+# Findings that need the code owner's approval: an error without a
+# `Check changes:` line in the pull request body, a notice naming the finding
+# with one. The line follows the weakened-checks action's rule.
+explained=$'Adds a thing.\r\n\r\nCheck changes: the reason.'
+asks='explain it in a `Check changes:` line in the pull request body.'
+told="the pull request body's \`Check changes:\` line explains it, for the code owner to review."
+
+# approval_kind <name> <finding> <setup commands>
+approval_kind() {
+  local name="$1" finding="$2" setup="$3"
+  BASE_REF=HEAD run_case "${name} without a Check changes line is an error" 1 \
+    "::error title=rust-ci baseline drift::${finding}" "::notice" <<<"${setup}"
+  BASE_REF=HEAD run_case "${name} without a Check changes line asks for one" 1 "${asks}" "::notice" <<<"${setup}"
+  BASE_REF=HEAD PR_BODY="${explained}" run_case "${name} with a Check changes line is a notice" 0 \
+    "::notice title=rust-ci baseline drift::${finding}" "::error" <<<"${setup}"
+  BASE_REF=HEAD PR_BODY="${explained}" run_case "${name} with a Check changes line says so" 0 "${told}" "::error" <<<"${setup}"
+}
+
+ignore_setup="commit_base && sed -i 's/^ignore = \[\]/ignore = [{ id = \"RUSTSEC-2024-0002\", reason = \"no fix\" }]/' deny.toml"
+approval_kind "new autotests = false" \
+  "crates/a/Cargo.toml: [package] autotests = false leaves files in tests/ without a [[test]] entry out of the test run, and is new since the base commit; it needs the code owner's approval" \
+  "add_member a '[lints]\nworkspace = true\n' && commit_base && sed -i '2a autotests = false' crates/a/Cargo.toml"
+approval_kind "new default-filter" \
+  ".config/nextest.toml: profile.ci.default-filter is \"not test(slow)\", which leaves the tests it doesn't match out of every run; a new or changed filter needs the code owner's approval" \
+  "commit_base && sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml"
+approval_kind "changed default-filter" \
+  ".config/nextest.toml: profile.ci.default-filter is \"not test(slower)\"" \
+  "sed -i 's/^\[profile.ci\]$/&\ndefault-filter = \"not test(slow)\"/' .config/nextest.toml && commit_base && sed -i 's/test(slow)/test(slower)/' .config/nextest.toml"
+approval_kind "new advisory ignore" \
+  'deny.toml: advisories.ignore has {"id": "RUSTSEC-2024-0002"}, new since the base commit; a new advisory ignore needs the code owner'"'"'s approval' \
+  "${ignore_setup}"
+approval_kind "new bans skip" \
+  'deny.toml: bans.skip has "windows-sys@0.48", new since the base commit; a new duplicate-version skip needs the code owner'"'"'s approval' \
+  "commit_base && sed -i 's/^allow-wildcard-paths = true$/&\nskip = [\"windows-sys@0.48\"]/' deny.toml"
+approval_kind "new bans skip-tree" \
+  'deny.toml: bans.skip-tree has "windows-sys@0.48", new since the base commit; a new duplicate-version skip needs the code owner'"'"'s approval' \
+  "commit_base && sed -i 's/^allow-wildcard-paths = true$/&\nskip-tree = [\"windows-sys@0.48\"]/' deny.toml"
+approval_kind "new workspace exclude" \
+  'Cargo.toml: workspace.exclude has "crates/a", new since the base commit; a new workspace exclude needs the code owner'"'"'s approval' \
+  "commit_base && add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
+
+# What counts as a Check changes line: <body> <exit status>.
+line_cases=(
+  $'Check changes: the reason.' 0
+  $'check CHANGES: any case.' 0
+  $'  \tCheck changes:   after spaces.' 0
+  $'Summary.\n\nCheck changes: on a later line.\nMore.' 0
+  $'Check changes:' 1
+  $'Check changes:   \r\nThe reason, on the next line.' 1
+  $'- Check changes: in a list.' 1
+  $'**Check changes:** in bold.' 1
+  $'See the Check changes: mid-line.' 1
+  $'Check changes the reason, no colon.' 1
+  '' 1
+)
+for ((i = 0; i < ${#line_cases[@]}; i += 2)); do
+  body="${line_cases[i]}" code="${line_cases[i + 1]}"
+  if [[ ${code} -eq 0 ]]; then want="::notice" unwanted="::error"; else want="${asks}" unwanted="::notice"; fi
+  BASE_REF=HEAD PR_BODY="${body}" run_case "body $(printf '%q' "${body}") exits ${code}" "${code}" "${want}" "${unwanted}" \
+    <<<"${ignore_setup}"
+done
+
+# One line covers every approval finding, and no other error.
+BASE_REF=HEAD PR_BODY="${explained}" run_case "one line explains every approval finding" 0 \
+  'bans.skip has "windows-sys@0.48"' "::error" \
+  <<<"${ignore_setup} && sed -i 's/^allow-wildcard-paths = true$/&\nskip = [\"windows-sys@0.48\"]/' deny.toml"
+BASE_REF=HEAD PR_BODY="${explained}" run_case "an explained finding beside another error still fails" 1 \
+  "::error title=rust-ci baseline drift::.config/nextest.toml: profile.ci retries tests 2 times" "no drift" \
+  <<<"${ignore_setup} && sed -i 's/^\[profile.ci\]$/&\nretries = 2/' .config/nextest.toml"
+BASE_REF=HEAD PR_BODY="${explained}" run_case "the explained finding beside it is a notice" 1 \
+  '::notice title=rust-ci baseline drift::deny.toml: advisories.ignore has {"id": "RUSTSEC-2024-0002"}' "no drift" \
+  <<<"${ignore_setup} && sed -i 's/^\[profile.ci\]$/&\nretries = 2/' .config/nextest.toml"
+BASE_REF=HEAD PR_BODY="${explained}" run_case "a Check changes line doesn't excuse a removed lint" 1 \
+  "::error title=rust-ci baseline drift::Cargo.toml [workspace.lints]: clippy.use_self was removed" "::notice" \
+  <<<"commit_base && sed -i '/^use_self/d' Cargo.toml"
+PR_BODY="${explained}" run_case "a Check changes line doesn't excuse a weakened setting" 1 \
+  'deny.toml: bans.wildcards is "warn", weaker' "::notice" \
+  <<<"sed -i 's/^wildcards = \"deny\"/wildcards = \"warn\"/' deny.toml"
+PR_BODY="${explained}" run_case "a Check changes line doesn't excuse retries in the ci profile" 1 \
+  "profile.ci retries tests 2 times" "::notice" \
+  <<<"sed -i 's/^\[profile.ci\]$/&\nretries = 2/' .config/nextest.toml"
+PR_BODY="${explained}" run_case "a Check changes line without a base is no drift" 0 "no drift" "::" \
   <<<"sed -i 's/^ignore = \[\]/ignore = [\"RUSTSEC-2024-0001\"]/' deny.toml"
 
 # .cargo/config.toml.

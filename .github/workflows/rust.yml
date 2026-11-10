@@ -163,6 +163,12 @@ jobs:
           # A baseline setting the pull request removes is an error. Empty on
           # other events.
           base-ref: ${{ github.event.pull_request.base.sha }}
+          # A `Check changes:` line here turns each finding that needs the code
+          # owner's approval into a notice. This is the body when the run's
+          # event fired: a re-run reads the same one, and this workflow doesn't
+          # run on `edited`, so a line added later needs a new push. Empty on
+          # other events.
+          pr-body: ${{ github.event.pull_request.body }}
 
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup toolchain install

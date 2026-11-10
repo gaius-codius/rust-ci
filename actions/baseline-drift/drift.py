@@ -33,6 +33,15 @@ Errors (they fail the job):
   the base had, and every entry when there is no base, pass;
 - a file that can't be read or parsed, or a check that could not run.
 
+The findings new since the base commit that take tests or checks out of the
+run (`autotests = false`, a new or changed nextest `default-filter`, and new
+entries in the exception lists above) need the code owner's approval. Each
+is an error unless the pull request body, in DRIFT_PR_BODY, has a line that
+starts, after optional spaces, with `Check changes:` (any case) followed by
+some text: the weakened-checks action's convention. With that line each is a
+notice, which names the finding, for the code owner to review. Unset or
+empty, DRIFT_PR_BODY has no such line.
+
 Warnings: a baseline setting, list item or file the project doesn't have and
 didn't have at the base commit. This is how a new baseline item reaches
 projects that haven't copied it yet.
@@ -73,6 +82,7 @@ and, with DRIFT_BASE_REF set, git.
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -101,7 +111,35 @@ SCOPES = {
 }
 SCOPED = {"advisories.unmaintained", "advisories.unsound"}
 
-ERROR, WARNING = "error", "warning"
+ERROR, WARNING, NOTICE = "error", "warning", "notice"
+# A finding the code owner reviews: an error, unless the pull request body
+# explains it in a `Check changes:` line, which makes it a notice. Its message
+# ends where the explanation would be asked for.
+APPROVAL = "approval"
+
+# The weakened-checks action's rule for that line: it starts, after optional
+# spaces, with "Check changes:" in any case, followed by some text on the same
+# line (grep -iE '^[[:space:]]*check changes:[[:space:]]*[^[:space:]]').
+CHECK_CHANGES = re.compile(r"^[ \t\v\f\r]*check changes:[ \t\v\f\r]*[^ \t\v\f\r\n]", re.IGNORECASE | re.ASCII | re.MULTILINE)
+
+
+def explained(body):
+    """Whether a pull request body has a `Check changes:` line."""
+    return CHECK_CHANGES.search(body) is not None
+
+
+def resolve(problems, body):
+    """Turns each finding that needs the code owner's approval into an error or a notice."""
+    is_explained = explained(body)
+    resolved = []
+    for level, message in problems:
+        if level != APPROVAL:
+            resolved.append((level, message))
+        elif is_explained:
+            resolved.append((NOTICE, f"{message}; the pull request body's `Check changes:` line explains it, for the code owner to review."))
+        else:
+            resolved.append((ERROR, f"{message}: explain it in a `Check changes:` line in the pull request body."))
+    return resolved
 
 
 def show(value):
@@ -415,9 +453,7 @@ def check_test_switches(members, ref):
                 problems.append((ERROR, f"could not read the base commit's {name}, so its autotests were not compared: {err}"))
                 continue
             if ref and table(base, "package").get("autotests") is not False:
-                problems.append(
-                    (ERROR, f"{name}: {skips}, and is new since the base commit; it needs the code owner's approval: explain it in the pull request.")
-                )
+                problems.append((APPROVAL, f"{name}: {skips}, and is new since the base commit; it needs the code owner's approval"))
             else:
                 problems.append((WARNING, f"{name}: {skips}; check that each has an entry."))
         tests = member.get("test", [])
@@ -516,9 +552,7 @@ def check_nextest(ref):
             value = settings["default-filter"]
             skips = f"profile.{profile}.default-filter is {show(value)}, which leaves the tests it doesn't match out of every run"
             if ref and table(base, f"profile.{profile}").get("default-filter") != value:
-                problems.append(
-                    (ERROR, f"{name}: {skips}; a new or changed filter needs the code owner's approval: explain it in the pull request.")
-                )
+                problems.append((APPROVAL, f"{name}: {skips}; a new or changed filter needs the code owner's approval"))
             else:
                 problems.append((WARNING, f"{name}: {skips}."))
     return problems
@@ -564,7 +598,7 @@ def check_new_exceptions(ref):
         had = {entry_key(entry) for entry in had} if isinstance(had, list) else set()
         if new := [entry_key(entry) for entry in entries if entry_key(entry) not in had]:
             problems.append(
-                (ERROR, f"{name}: {setting} has {', '.join(new)}, new since the base commit; a new {what} needs the code owner's approval: explain it in the pull request.")
+                (APPROVAL, f"{name}: {setting} has {', '.join(new)}, new since the base commit; a new {what} needs the code owner's approval")
             )
     return problems
 
@@ -736,6 +770,7 @@ def main():
         problems += check_profiles(manifest, "Cargo.toml")
     problems += check_nextest(ref)
     problems += check_new_exceptions(ref)
+    problems = resolve(problems, os.environ.get("DRIFT_PR_BODY", ""))
     for level, message in sorted(problems, key=lambda p: (p[0] != ERROR, p[1])):
         print(f"::{level} title=rust-ci baseline drift::{message}")
     if not problems:
