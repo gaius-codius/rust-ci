@@ -234,7 +234,9 @@ approval_kind "new workspace exclude" \
   'Cargo.toml: workspace.exclude has "crates/a", new since the base commit; a new workspace exclude needs the code owner'"'"'s approval' \
   "commit_base && add_member a '' && sed -i 's/^members = .*/&\nexclude = [\"crates\/a\"]/' Cargo.toml"
 
-# What counts as a Check changes line: <body> <exit status>.
+# What counts as a Check changes line: <body> <exit status>. Each status is
+# also checked against the weakened-checks rule itself, in grep on a GitHub
+# runner's locale, so the two can't drift apart.
 line_cases=(
   $'Check changes: the reason.' 0
   $'check CHANGES: any case.' 0
@@ -246,11 +248,24 @@ line_cases=(
   $'**Check changes:** in bold.' 1
   $'See the Check changes: mid-line.' 1
   $'Check changes the reason, no colon.' 1
+  $'Check changes:\xe3\x80\x80' 1
+  $'\xe3\x80\x80Check changes: after an ideographic space.' 0
+  $'Check changes:\xc2\xa0' 0
+  $'Check change\xc5\xbf: a long s folds to s.' 0
+  $'Chec\xe2\x84\xaa changes: the Kelvin sign does not fold to k.' 1
   '' 1
 )
+rule='^[[:space:]]*check changes:[[:space:]]*[^[:space:]]'
+
 for ((i = 0; i < ${#line_cases[@]}; i += 2)); do
   body="${line_cases[i]}" code="${line_cases[i + 1]}"
   if [[ ${code} -eq 0 ]]; then want="::notice" unwanted="::error"; else want="${asks}" unwanted="::notice"; fi
+  LC_ALL=C.UTF-8 grep -qiE "${rule}" <<<"${body}"
+  grep_code=$?
+  if [[ ${grep_code} -ne ${code} ]]; then
+    echo "FAIL body $(printf '%q' "${body}"): the weakened-checks rule exits ${grep_code} (want ${code})"
+    failures=$((failures + 1))
+  fi
   BASE_REF=HEAD PR_BODY="${body}" run_case "body $(printf '%q' "${body}") exits ${code}" "${code}" "${want}" "${unwanted}" \
     <<<"${ignore_setup}"
 done

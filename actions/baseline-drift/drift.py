@@ -119,8 +119,15 @@ APPROVAL = "approval"
 
 # The weakened-checks action's rule for that line: it starts, after optional
 # spaces, with "Check changes:" in any case, followed by some text on the same
-# line (grep -iE '^[[:space:]]*check changes:[[:space:]]*[^[:space:]]').
-CHECK_CHANGES = re.compile(r"^[ \t\v\f\r]*check changes:[ \t\v\f\r]*[^ \t\v\f\r\n]", re.IGNORECASE | re.ASCII | re.MULTILINE)
+# line (grep -iE '^[[:space:]]*check changes:[[:space:]]*[^[:space:]]'). This
+# is that grep's reading on a GitHub runner (GNU grep, C.UTF-8): its spaces are
+# these, and its case folding adds only the long s to the ASCII pairs.
+SPACES = " \t\v\f\r\u1680\u2000-\u2006\u2008-\u200a\u2028\u2029\u205f\u3000"
+FOLDS = {"s": "sS\u017f"}
+WORDS = "".join(
+    f"[{FOLDS.get(c, c + c.upper())}]" if c.isalpha() else re.escape(c) for c in "check changes:"
+)
+CHECK_CHANGES = re.compile(f"^[{SPACES}]*{WORDS}[{SPACES}]*[^{SPACES}\n]", re.MULTILINE)
 
 
 def explained(body):
