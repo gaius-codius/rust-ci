@@ -252,7 +252,7 @@ line_cases=(
   $'\xe3\x80\x80Check changes: after an ideographic space.' 0
   $'Check changes:\xc2\xa0' 0
   $'Check change\xc5\xbf: a long s folds to s.' 0
-  $'Chec\xe2\x84\xaa changes: the Kelvin sign does not fold to k.' 1
+  $'Che\x63\xe2\x84\xaa changes: the Kelvin sign does not fold to k.' 1
   '' 1
 )
 rule='^[[:space:]]*check changes:[[:space:]]*[^[:space:]]'
